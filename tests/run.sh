@@ -419,6 +419,8 @@ if section "record"; then
   check "lid closed mid-recording: stops early (took ${took}s of 30)" test "$took" -lt 15
   eq "partial recording is kept" 1 "$(nfiles "$Q/recordings")"
   has "partial is logged" "$L/record.log" "stopped early"
+  has "clean INT stop worked even from a background job (perl resets SIGINT)" "$STUB_DIR/calls" "screencapture finished early"
+  hasnt "no TERM needed" "$L/record.log" "sent TERM"
   has "done note says partial" "$(first_file "$Q/control")" "partial:   yes"
   end_env
 fi

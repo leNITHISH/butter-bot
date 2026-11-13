@@ -191,10 +191,14 @@ if ask "Run a 10-second test recording now? (macOS shows its recording indicator
   fi
   info "Now the stop switch: a 30 s recording, PAUSE appears after 5 s."
   before=$(count_files "$MW_QUEUE/recordings")
-  "$MW_BIN/record.sh" 30 selftest-stop &
-  rp=$!
-  if [ "$AUTO" = 1 ]; then sleep 1; else sleep 5; fi; touch "$MW_PAUSE"
-  t0=$(now); wait "$rp"; took=$(( $(now) - t0 ))
+  # record.sh runs in the FOREGROUND (like the launchd agent does); a helper
+  # in the background creates PAUSE after a few seconds.
+  if [ "$AUTO" = 1 ]; then delay=1; else delay=5; fi
+  ( sleep "$delay"; touch "$MW_PAUSE" ) &
+  t0=$(now)
+  "$MW_BIN/record.sh" 30 selftest-stop
+  took=$(( $(now) - t0 ))
+  wait
   rm -f "${MW_PAUSE:?}"
   if [ "$took" -lt 20 ] && wait_new "$MW_QUEUE/recordings" "$before" 5; then
     pass "PAUSE stopped the recording after ${took}s and the partial file was kept"

@@ -88,10 +88,18 @@ log INFO "record: starting ${secs}s recording${marker:+ (marker $marker)}"
 ) &
 wd=$!
 
-# Recorder (foreground). The inner sh writes its pid, then becomes screencapture.
+# Recorder (foreground). It first writes its own pid, then BECOMES screencapture.
+# perl (ships with macOS) additionally resets SIGINT to default, so the clean
+# INT stop works even if whoever started us left SIGINT ignored (which a plain
+# background job in sh does). Without perl, plain sh is used.
 # shellcheck disable=SC2086  # SCREENCAPTURE_EXTRA is meant to word-split
-sh -c 'echo $$ > "$1"; shift; exec "$@"' sh "$pidf" \
-  screencapture -v -V "$secs" -x $SCREENCAPTURE_EXTRA "$raw" 2> "$errf"
+if command -v perl >/dev/null 2>&1; then
+  perl -e 'open(F, ">", shift) or die "pidfile: $!"; print F $$; close F; $SIG{INT} = "DEFAULT"; exec(@ARGV) or die "exec: $!"' "$pidf" \
+    screencapture -v -V "$secs" -x $SCREENCAPTURE_EXTRA "$raw" 2> "$errf"
+else
+  sh -c 'echo $$ > "$1"; shift; exec "$@"' sh "$pidf" \
+    screencapture -v -V "$secs" -x $SCREENCAPTURE_EXTRA "$raw" 2> "$errf"
+fi
 rrc=$?
 kill "$wd" 2>/dev/null
 wait "$wd" 2>/dev/null
