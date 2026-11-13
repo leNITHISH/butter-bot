@@ -7,8 +7,8 @@
 #   --hammerspoon   after asking, add ONE line to ~/.hammerspoon/init.lua (Phase 3 triggers)
 # Writes only inside this folder and ~/Library/LaunchAgents. No sudo. No power settings.
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
-MW_NAME=install
 mw_load_config
 
 use_wrapper=0

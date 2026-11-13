@@ -1,8 +1,8 @@
 #!/bin/sh
 # status.sh - what is mac-watch doing right now? Safe to run any time; changes nothing.
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
-MW_NAME=status
 mw_load_config
 
 t=$(now)

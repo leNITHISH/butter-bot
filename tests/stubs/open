@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "open $*" >> "$STUB_DIR/calls"

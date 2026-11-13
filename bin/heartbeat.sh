@@ -3,6 +3,7 @@
 #   beat   one status line in log/events.log (battery, power, Wi-Fi, uptime, queue)
 #   power  log a line whenever the power source changes (e.g. charger unplugged)
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
 mw_init events
 

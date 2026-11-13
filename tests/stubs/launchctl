@@ -1,0 +1,7 @@
+#!/bin/sh
+echo "launchctl $*" >> "$STUB_DIR/calls"
+[ -e "$STUB_DIR/launchctl_fail" ] && { echo "Could not find service" >&2; exit 113; }
+if [ "$1" = list ]; then
+  printf '%s\t0\tcom.macwatch.capture\n' 123; printf -- '-\t0\tcom.macwatch.upload\n'; printf -- '-\t0\tcom.macwatch.record\n'
+fi
+exit 0

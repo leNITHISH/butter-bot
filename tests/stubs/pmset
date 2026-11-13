@@ -1,0 +1,5 @@
+#!/bin/sh
+case $(cat "$STUB_DIR/power" 2>/dev/null) in
+  Battery) echo "Now drawing from 'Battery Power'"; printf ' -InternalBattery-0 (id=1)\t64%%; discharging; 3:10 remaining present: true\n' ;;
+  *)       echo "Now drawing from 'AC Power'"; printf ' -InternalBattery-0 (id=1)\t87%%; charging; 1:23 remaining present: true\n' ;;
+esac

@@ -1,0 +1,17 @@
+#!/bin/sh
+echo "sips $*" >> "$STUB_DIR/calls"
+[ -e "$STUB_DIR/sips_fail" ] && exit 1
+if [ "$1" = "-g" ]; then echo "$3"; echo "  pixelWidth: ${STUB_WIDTH:-2880}"; exit 0; fi
+in=; out=
+while [ $# -gt 0 ]; do
+  case $1 in
+    -s|-z) shift ;;
+    --resampleWidth|-Z) shift ;;
+    --out) out=$2; shift ;;
+    -*) ;;
+    *) in=$1 ;;
+  esac
+  shift
+done
+[ -n "$out" ] && [ -f "$in" ] && cp "$in" "$out"
+exit 0

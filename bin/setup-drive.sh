@@ -2,8 +2,8 @@
 # setup-drive.sh - one-time Google Drive login for rclone, with the trade-off
 # explained BEFORE anything happens. Never prints or logs the token or config.
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
-MW_NAME=setup
 mw_load_config
 
 command -v rclone >/dev/null 2>&1 || { echo "Install rclone first:  brew install rclone"; exit 1; }

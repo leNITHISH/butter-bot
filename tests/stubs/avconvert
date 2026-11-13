@@ -1,0 +1,9 @@
+#!/bin/sh
+echo "avconvert $*" >> "$STUB_DIR/calls"
+[ -e "$STUB_DIR/avconvert_fail" ] && exit 1
+src=; out=
+while [ $# -gt 0 ]; do
+  case $1 in --source) src=$2; shift ;; --output) out=$2; shift ;; --preset) shift ;; esac
+  shift
+done
+head -c 10 "$src" > "$out"

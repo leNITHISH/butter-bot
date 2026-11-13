@@ -10,6 +10,7 @@
 # screencapture only finalises the movie file on SIGINT/SIGTERM. Keeping it
 # in the foreground keeps its signals normal.
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
 mw_init record
 
@@ -68,11 +69,18 @@ log INFO "record: starting ${secs}s recording${marker:+ (marker $marker)}"
     if [ -z "$why" ] && [ "$(now)" -ge "$deadline" ]; then why="time limit"; fi
     if [ -n "$why" ]; then
       echo "$why" > "$flagf"
+      log WARN "record: stopping the recording ($why): sent INT"
       kill -INT "$pid" 2>/dev/null
       sleep "$STOP_GRACE_SEC"
-      kill -0 "$pid" 2>/dev/null && kill -TERM "$pid" 2>/dev/null
-      sleep "$STOP_GRACE_SEC"
-      kill -0 "$pid" 2>/dev/null && kill -KILL "$pid" 2>/dev/null
+      if kill -0 "$pid" 2>/dev/null; then
+        log WARN "record: INT did not stop it, sent TERM"
+        kill -TERM "$pid" 2>/dev/null
+        sleep "$STOP_GRACE_SEC"
+        if kill -0 "$pid" 2>/dev/null; then
+          log WARN "record: TERM did not stop it, sent KILL (the file may be unplayable)"
+          kill -KILL "$pid" 2>/dev/null
+        fi
+      fi
       exit 0
     fi
     sleep "$WATCHDOG_POLL_SEC"

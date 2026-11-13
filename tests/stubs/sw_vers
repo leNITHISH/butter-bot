@@ -1,0 +1,2 @@
+#!/bin/sh
+printf 'ProductName:\t\tmacOS\nProductVersion:\t\t26.6.2\nBuildVersion:\t\tSTUB\n'

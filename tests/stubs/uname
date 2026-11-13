@@ -1,0 +1,4 @@
+#!/bin/sh
+# Pretend to be macOS only when STUB_DARWIN=1 (install/uninstall tests).
+if [ "$STUB_DARWIN" = 1 ] && [ "$1" = "-s" ]; then echo Darwin; exit 0; fi
+exec /usr/bin/uname "$@"

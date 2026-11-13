@@ -1,0 +1,25 @@
+#!/bin/sh
+# Fake screencapture. State dir: $STUB_DIR. Last argument is the output file.
+echo "screencapture $*" >> "$STUB_DIR/calls"
+[ -e "$STUB_DIR/screencapture_fail" ] && { echo "screencapture: cannot capture" >&2; exit 1; }
+video=0; secs=0; out=
+while [ $# -gt 0 ]; do
+  case $1 in
+    -v) video=1 ;;
+    -V) secs=$2; shift ;;
+    -t) shift ;;
+    -*) ;;
+    *) out=$1 ;;
+  esac
+  shift
+done
+if [ "$video" = 0 ]; then
+  { cat "$STUB_DIR/screen" 2>/dev/null || echo "screen-A"; printf 'PAD%.0s' 1 2 3 4 5 6 7 8 9 10; } > "$out"
+  exit 0
+fi
+finish() { echo "MOVIE secs-recorded" > "$out"; echo "screencapture finished early" >> "$STUB_DIR/calls"; exit 0; }
+trap finish INT TERM
+n=0; limit=$(( ${STUB_REC_MAX:-$secs} * 5 ))
+while [ "$n" -lt "$limit" ]; do sleep 0.2; n=$((n + 1)); done
+echo "MOVIE full-length-recording-content-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" > "$out"
+echo "screencapture finished full" >> "$STUB_DIR/calls"

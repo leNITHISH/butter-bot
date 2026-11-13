@@ -1,0 +1,2 @@
+#!/bin/sh
+echo "caffeinate $*" >> "$STUB_DIR/calls"

@@ -4,8 +4,8 @@
 #   --purge  also deletes queue/, tmp/, log/, state/ (asks first). Never touches
 #            config.env, the rclone config, or anything in Google Drive.
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
-MW_NAME=uninstall
 mw_load_config
 
 AGENTS_DIR=${MW_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}

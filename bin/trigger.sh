@@ -3,6 +3,7 @@
 # gate (lid open, no PAUSE) -> per-reason debounce -> capture.sh.
 # Reasons: interval, login, remote, space, wake, lock, unlock, selftest, manual ...
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
 mw_init capture
 

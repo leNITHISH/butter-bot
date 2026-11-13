@@ -1,0 +1,79 @@
+#!/bin/sh
+# Fake rclone: "remote:path" maps to $STUB_RCLONE_ROOT/path. Enough of move, lsf,
+# delete, deletefile, purge, rmdirs, mkdir for mac-watch. Never touches the network.
+echo "rclone $*" >> "$STUB_DIR/rclone_calls"
+if [ -s "$STUB_DIR/rclone_fail" ]; then
+  code=$(cut -d'|' -f1 < "$STUB_DIR/rclone_fail"); msg=$(cut -d'|' -f2- < "$STUB_DIR/rclone_fail")
+  echo "$msg" >&2; exit "$code"
+fi
+ROOT=$STUB_RCLONE_ROOT
+cmd=; mindays=; include=; dels=0; leave=0; rec=0
+pos_file=$STUB_DIR/.pos.$$; : > "$pos_file"
+while [ $# -gt 0 ]; do
+  case $1 in
+    -q) ;;
+    -R) rec=1 ;;
+    --contimeout|--timeout|--retries|--low-level-retries|--format|--min-age|--include|--max-depth)
+      case $1 in
+        --min-age) mindays=${2%d} ;;
+        --include) include=$2 ;;
+      esac
+      shift ;;
+    --delete-empty-src-dirs) dels=1 ;;
+    --leave-root) leave=1 ;;
+    --drive-use-trash=false) ;;
+    -*) ;;
+    *) if [ -z "$cmd" ]; then cmd=$1; else printf '%s\n' "$1" >> "$pos_file"; fi ;;
+  esac
+  shift
+done
+p1=$(sed -n 1p "$pos_file"); p2=$(sed -n 2p "$pos_file"); rm -f "$pos_file"
+rmap() { case $1 in *:*) printf '%s/%s' "$ROOT" "${1#*:}" ;; *) printf '%s' "$1" ;; esac; }
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
+fmt() { date -d "@$1" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || date -r "$1" '+%Y-%m-%d %H:%M:%S'; }
+if [ -e "$STUB_DIR/rclone_nodelete" ]; then
+  case $cmd in deletefile|purge) echo "cannot delete: permission denied" >&2; exit 1 ;; esac
+fi
+case $cmd in
+  version) echo "rclone v0.0-stub" ;;
+  listremotes) printf '%s\n' "${STUB_REMOTES:-gdrive:}" ;;
+  config) echo "$STUB_DIR/rclone.conf" ;;
+  lsd) exit 0 ;;
+  mkdir) mkdir -p "$(rmap "$p1")" ;;
+  move)
+    src=$p1; dst=$(rmap "$p2")
+    [ -d "$src" ] || exit 3
+    find "$src" -type f | while IFS= read -r f; do
+      rel=${f#"$src"/}
+      mkdir -p "$dst/$(dirname "$rel")"
+      mv "$f" "$dst/$rel"
+    done
+    if [ "$dels" = 1 ]; then find "$src" -depth -mindepth 1 -type d -empty -exec rmdir {} \; 2>/dev/null; fi
+    exit 0 ;;
+  copyto) mkdir -p "$(dirname "$(rmap "$p2")")"; cp "$p1" "$(rmap "$p2")" ;;
+  lsf)
+    d=$(rmap "$p1"); [ -d "$d" ] || exit 3
+    if [ "$rec" = 1 ]; then (cd "$d" && find . -type f | sed 's|^\./||'); exit 0; fi
+    for e in "$d"/* "$d"/.[!.]*; do
+      [ -e "$e" ] || continue
+      n=${e##*/}
+      if [ -d "$e" ]; then printf '%s;%s/\n' "$(fmt "$(mtime "$e")")" "$n"; else printf '%s;%s\n' "$(fmt "$(mtime "$e")")" "$n"; fi
+    done ;;
+  delete)
+    d=$(rmap "$p1"); [ -d "$d" ] || exit 3
+    cutoff=$(( $(date +%s) - ${mindays:-0} * 86400 ))
+    find "$d" -type f | while IFS= read -r f; do
+      # shellcheck disable=SC2254  # the include pattern is meant as a glob
+      [ -n "$include" ] && case ${f##*/} in $include) ;; *) continue ;; esac
+      if [ "$(mtime "$f")" -le "$cutoff" ]; then rm -f "$f"; fi
+    done
+    exit 0 ;;
+  deletefile) f=$(rmap "$p1"); [ -f "$f" ] || exit 4; rm -f "$f" ;;
+  purge) d=$(rmap "$p1"); [ -d "$d" ] || exit 3; rm -rf "$d" ;;
+  rmdirs)
+    d=$(rmap "$p1"); [ -d "$d" ] || exit 3
+    find "$d" -depth -mindepth 1 -type d -empty -exec rmdir {} \; 2>/dev/null
+    [ "$leave" = 1 ] || rmdir "$d" 2>/dev/null
+    exit 0 ;;
+  *) echo "rclone stub: unsupported command '$cmd'" >&2; exit 99 ;;
+esac

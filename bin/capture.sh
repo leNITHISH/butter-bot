@@ -3,6 +3,7 @@
 # Called by trigger.sh, which has already done the gate and the debounce.
 # File name: YYYYMMDD-HHMMSS-<reason>.jpg
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
 mw_init capture
 
@@ -67,6 +68,12 @@ fi
 # 4. Publish atomically: same filesystem, so mv is a rename and the uploader
 #    never sees a half-written file.
 mkdir -p "$MW_QUEUE/shots/$day"
+# two shots with the same reason in the same second must not overwrite each other
+n=1
+while [ -e "$MW_QUEUE/shots/$day/$name" ]; do
+  n=$((n + 1))
+  name=$ts-$reason-$n.jpg
+done
 if ! mv "$fin" "$MW_QUEUE/shots/$day/$name"; then
   note_error capture "could not move $name into the queue"
   exit 1

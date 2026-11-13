@@ -6,6 +6,7 @@
 #   4. Drive control/ markers: snap-now, record-5min
 #   5. flush queue/ to Drive (rclone move), prune Drive older than RETENTION_DAYS
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
 mw_init upload
 
@@ -203,8 +204,11 @@ flush_queue() { # force(0/1)
   mkdir -p "$MW_QUEUE"   # --delete-empty-src-dirs must never take the queue root
   if [ "$_failed" = 0 ]; then
     clear_error upload
-    now > "$MW_STATE/last-upload-ok"
-    log INFO "upload ok: $((_before - $(queue_count))) of $_before file(s) uploaded, $(queue_count) left (newer than 15s)"
+    _sent=$((_before - $(queue_count)))
+    if [ "$_sent" -gt 0 ]; then
+      now > "$MW_STATE/last-upload-ok"
+      log INFO "upload ok: $_sent of $_before file(s) uploaded, $(queue_count) left (newer than 15s)"
+    fi
   fi
 }
 

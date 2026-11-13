@@ -1,0 +1,5 @@
+#!/bin/sh
+case $1 in
+  -listallhardwareports) printf 'Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: aa\n' ;;
+  -getairportpower) echo "Wi-Fi Power (en0): On" ;;
+esac
