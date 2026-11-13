@@ -137,4 +137,15 @@ Development happens on **Linux** (my Arch laptop, or a Claude cloud sandbox), no
 
 ## Status (update as you go)
 
-- [ ] Phase 1  - [ ] Phase 2  - [ ] Phase 3  - [ ] Phase 4
+- [x] Phase 1  - [x] Phase 2  - [x] Phase 3  - [x] Phase 4
+
+All four phases are **built and tested on Linux** (`make check`: lint plus 177 checks under dash and bash --posix,
+including the real `rclone` local backend). **Nothing is verified on the Mac yet.** Still to do on the Mac:
+`./bin/setup-drive.sh`, `./bin/install.sh`, grant Screen Recording to `/bin/sh` (fallback `--wrapper`),
+then `./bin/selftest.sh` and paste back the result (or `./bin/diagnose.sh`).
+
+Decisions made without waiting for answers to the Open questions: `KEEP_AWAKE=0`, displays left to
+`screencapture` defaults (`SCREENCAPTURE_EXTRA="-m"` for main only), recording is screen only.
+Deviation from the plan: a third on-demand LaunchAgent, `com.macwatch.record`, runs recordings (a 5-minute
+recording cannot live inside the 60 s poll job, and background jobs started by a script cannot be stopped
+cleanly with SIGINT).
