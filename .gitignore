@@ -1,0 +1,13 @@
+# runtime data (never commit: screenshots, logs, state)
+/queue/
+/tmp/
+/log/
+/state/
+/PAUSE
+# generated
+/MacWatch.app/
+/dist/
+*.tar.gz
+# secrets must never be here, but belt and braces
+rclone.conf
+*.token
