@@ -35,13 +35,24 @@ https://myaccount.google.com/permissions.
 EOF2
 printf 'Paste the Client ID (or press Enter to cancel): '
 read -r cid
+cid=$(printf '%s' "$cid" | tr -d '[:space:]')
 [ -n "$cid" ] || { echo "Cancelled. Nothing was changed."; exit 1; }
+case $cid in
+  *.apps.googleusercontent.com) ;;
+  *) echo "That does not look like a Client ID. It is a long string that ends in .apps.googleusercontent.com"
+     echo "(If you pasted something starting with GOCSPX-, that is the SECRET; paste it at the next prompt instead.)"
+     exit 1 ;;
+esac
 printf 'Paste the Client secret (typing is hidden): '
 stty -echo 2>/dev/null
 read -r csec
 stty echo 2>/dev/null
 echo
+csec=$(printf '%s' "$csec" | tr -d '[:space:]')
 [ -n "$csec" ] || { echo "No secret entered. Nothing was changed."; exit 1; }
+case $csec in
+  *.apps.googleusercontent.com) echo "That is the Client ID, not the secret. Run this again and paste the secret (usually starts with GOCSPX-)."; exit 1 ;;
+esac
 
 if ! rclone listremotes 2>/dev/null | grep -qx "$RCLONE_REMOTE:"; then
   echo "No remote '$RCLONE_REMOTE' yet. Run ./bin/setup-drive.sh first."
@@ -49,6 +60,7 @@ if ! rclone listremotes 2>/dev/null | grep -qx "$RCLONE_REMOTE:"; then
 fi
 
 rclone config update "$RCLONE_REMOTE" client_id="$cid" client_secret="$csec" scope=drive >/dev/null || { echo "Could not update the rclone config."; exit 1; }
+echo "Saved client ID: $cid   (secret: ${#csec} characters, not shown)"
 cid=; csec=
 echo "Saved. Now logging in again with your own client: your browser opens; click Allow."
 rclone config reconnect "$RCLONE_REMOTE:" || { echo "Login failed. Re-run this script."; exit 1; }
