@@ -208,6 +208,31 @@ if section "upload: loud auth failures, no secrets in logs"; then
   end_env
 fi
 
+if section "rate limit backoff"; then
+  new_env
+  run trigger.sh space
+  echo '1|googleapi: Error 403: Rate Limit Exceeded, rateLimitExceeded' > "$STUB_DIR/rclone_fail"
+  run upload.sh
+  check "rate limit: backoff stamp written" test -s "$S/backoff-until"
+  has "rate limit: hint names the permanent fix" "$L/upload.log" "setup-oauth.sh"
+  rm "$STUB_DIR/rclone_fail"; : > "$STUB_DIR/rclone_calls"
+  run upload.sh
+  eq "during backoff: rclone is not called at all" 0 "$(wc -l < "$STUB_DIR/rclone_calls" | tr -d ' ')"
+  eq "during backoff: file stays queued" 1 "$(nshots)"
+  echo 1000 > "$S/backoff-until"
+  run upload.sh
+  eq "after backoff: uploads again" 0 "$(nshots)"
+  check "after a clean run the error flag is gone" test ! -f "$S/error-upload"
+  end_env
+  new_env
+  echo "1|boom: something transient" > "$STUB_DIR/rclone_fail"
+  run upload.sh
+  check "transient error flagged" test -f "$S/error-upload"
+  rm "$STUB_DIR/rclone_fail"; run upload.sh
+  check "clean run with an empty queue also clears the flag" test ! -f "$S/error-upload"
+  end_env
+fi
+
 if section "queue cap"; then
   new_env
   cfg QUEUE_MAX_FILES=3

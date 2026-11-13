@@ -29,6 +29,15 @@ if ! lock_acquire upload 10; then
   debug "upload: previous run still going"
   exit 0
 fi
+# Drive said "slow down": stay quiet until the backoff expires instead of hammering it.
+_bo=$(cat "$MW_STATE/backoff-until" 2>/dev/null)
+case $_bo in ''|*[!0-9]*) _bo=0 ;; esac
+if [ "$(now)" -lt "$_bo" ]; then
+  debug "upload: backing off for $((_bo - $(now)))s after a Drive rate limit"
+  lock_release upload
+  exit 0
+fi
+run_errors=0
 errf=$MW_TMP/rclone-err.$$
 list=$MW_TMP/list.$$
 # shellcheck disable=SC2329  # called by trap
@@ -79,14 +88,22 @@ now > "$MW_STATE/last-poll"
 
 # ---------------------------------------------------------- rclone errors ---
 
+backing_off() {
+  _b=$(cat "$MW_STATE/backoff-until" 2>/dev/null)
+  case $_b in ''|*[!0-9]*) return 1 ;; esac
+  [ "$(now)" -lt "$_b" ]
+}
+
 report_rclone_error() { # CONTEXT EXITCODE   (stderr of the failed call is in $errf)
+  run_errors=$((run_errors + 1))
   _msg=$(tail -n 5 "$errf" 2>/dev/null | redact | tr '\n' ' ')
   _hint=
   case $_msg in
     *invalid_grant*|*oauth2*|*401*|*nauthorized*|*"didn't find section"*|*authError*|*"refresh token"*|*"Failed to configure token"*)
       _hint=" >>> AUTH PROBLEM: on the Mac run: rclone config reconnect $RCLONE_REMOTE:" ;;
     *rateLimitExceeded*|*"User rate limit"*)
-      _hint=" >>> Drive rate limit: see README 'Rate limits' (own OAuth client)" ;;
+      echo $(($(now) + 300)) > "$MW_STATE/backoff-until"
+      _hint=" >>> Drive rate limit (pausing 5 min). Permanent fix: ./bin/setup-oauth.sh (own Google client, see README)" ;;
   esac
   note_error upload "$1 failed (exit $2): $_msg$_hint"
 }
@@ -182,6 +199,7 @@ handle_markers
 # ------------------------------------------------------------------ flush ---
 
 flush_queue() { # force(0/1)
+  backing_off && return 0
   if [ "$1" != 1 ]; then
     _last=$(cat "$MW_STATE/last-flush" 2>/dev/null)
     case $_last in ''|*[!0-9]*) _last=0 ;; esac
@@ -224,6 +242,7 @@ fi
 # date folders. rclone exit 3 = directory does not exist yet: fine.
 
 prune_drive() {
+  backing_off && return 0
   _last=$(cat "$MW_STATE/last-prune" 2>/dev/null)
   case $_last in ''|*[!0-9]*) _last=0 ;; esac
   [ $(($(now) - _last)) -ge "$PRUNE_EVERY_SEC" ] || return 0
@@ -244,4 +263,6 @@ prune_drive() {
 }
 prune_drive
 
+# A run with no rclone errors at all means Drive is healthy again.
+[ "$run_errors" = 0 ] && clear_error upload
 exit 0

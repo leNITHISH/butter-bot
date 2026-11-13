@@ -94,21 +94,25 @@ else
 fi
 
 step "5. PAUSE kill switch"
+# Judge by the capture state file, not by counting queue files: the upload agent
+# may move files out of the queue while this runs.
 touch "$MW_PAUSE"
 rm -f "${MW_STATE:?}/last-trigger-selftest"
-before=$(count_files "$MW_QUEUE/shots")
+before=$(cat "$MW_STATE/last-capture" 2>/dev/null)
 "$MW_BIN/trigger.sh" selftest
-after=$(count_files "$MW_QUEUE/shots")
+after=$(cat "$MW_STATE/last-capture" 2>/dev/null)
 rm -f "${MW_PAUSE:?}"
-if [ "$before" = "$after" ]; then pass "PAUSE blocks capture"; else fail "a shot was taken while PAUSE existed"; fi
+if [ "$before" = "$after" ]; then pass "PAUSE blocks capture"; else fail "a capture happened while PAUSE existed"; fi
 "$MW_BIN/trigger.sh" selftest
-after2=$(count_files "$MW_QUEUE/shots")
-if [ "$after2" -gt "$after" ]; then pass "capture resumes when PAUSE is removed"; else fail "no shot after removing PAUSE (lid closed?)"; fi
+case $(cat "$MW_STATE/last-capture" 2>/dev/null) in
+  *'|selftest|'*'|ok') pass "capture resumes when PAUSE is removed" ;;
+  *) fail "no capture after removing PAUSE" "$(cut -d' ' -f2- "$MW_STATE/error-capture" 2>/dev/null) (lid closed? see log/capture.log)" ;;
+esac
 
 step "6. Google Drive login"
 if ! command -v rclone >/dev/null 2>&1; then
   skip "rclone not installed"
-elif rc lsd "$RCLONE_REMOTE:" --max-depth 0 >/dev/null 2>&1; then
+elif rc lsd "$RCLONE_REMOTE:" --max-depth 0 >/dev/null 2> "$MW_TMP/lsd.err"; then
   pass "rclone remote '$RCLONE_REMOTE' can reach Drive"
   cfg=$(rclone config file 2>/dev/null | tail -n 1)
   if [ -f "$cfg" ]; then
@@ -125,9 +129,12 @@ elif rc lsd "$RCLONE_REMOTE:" --max-depth 0 >/dev/null 2>&1; then
     fail "could not write/delete in Drive $DRIVE_FOLDER/control/" "run: rclone config reconnect $RCLONE_REMOTE:"
   fi
   rm -f "${MW_TMP:?}/${note:?}"
+elif grep -qi 'ratelimit\|rate limit' "$MW_TMP/lsd.err" 2>/dev/null; then
+  fail "Google Drive is rate-limiting rclone's shared client ID" "this is the known risk: run ./bin/setup-oauth.sh to use your own Google client (free, ~10 min, see README)"
 else
   fail "rclone cannot reach Drive with remote '$RCLONE_REMOTE'" "run ./bin/setup-drive.sh (or: rclone config reconnect $RCLONE_REMOTE:)"
 fi
+rm -f "${MW_TMP:?}/lsd.err"
 
 step "7. upload of the real shots"
 if command -v rclone >/dev/null 2>&1 && is_online; then

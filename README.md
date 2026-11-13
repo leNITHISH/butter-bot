@@ -187,14 +187,18 @@ Say the word and it can be added.
 ## Rate limits and the Google OAuth client
 
 rclone's built-in Google client ID is shared by everyone, and polling every minute can hit
-`rateLimitExceeded` (it shows up in `log/upload.log`). The fix is your own OAuth client:
+`rateLimitExceeded` (it shows in `log/upload.log` and `selftest.sh`; mac-watch then pauses
+Drive calls for 5 minutes and retries). The permanent fix is your own OAuth client:
 
-1. Google Cloud Console: new project, enable the *Google Drive API*.
-2. OAuth consent screen: user type External, then **publish it: status "In production"**.
-   In "Testing" status Google expires refresh tokens after about 7 days and everything silently
-   stops. (Check Google's current documentation; this has changed before.)
-3. Credentials: create an OAuth client ID of type *Desktop app*.
-4. `rclone config`, edit `gdrive`, enter the client ID and secret, and reconnect.
+```sh
+./bin/setup-oauth.sh
+```
+
+It prints the Google Cloud Console steps (create a project, enable the Drive API, make a
+*Desktop app* OAuth client), asks you to paste the client ID and secret, stores them in rclone's
+config and re-runs the login. **Publish the consent screen as "In production"**: in "Testing"
+status Google expires refresh tokens after about 7 days and everything silently stops.
+(Check Google's current documentation; this has changed before.)
 
 ## Problems
 
@@ -226,7 +230,7 @@ bin/lib.sh        config, logging, lid_open(), gate(), locks
 bin/trigger.sh    gate + debounce + capture          bin/capture.sh   one screenshot
 bin/record.sh     screen recording                   bin/upload.sh    markers, upload, prune, queue cap
 bin/status.sh     bin/diagnose.sh  bin/selftest.sh   bin/install.sh   bin/uninstall.sh
-bin/setup-drive.sh  bin/make-wrapper.sh  bin/heartbeat.sh
+bin/setup-drive.sh  bin/setup-oauth.sh  bin/make-wrapper.sh  bin/heartbeat.sh
 hammerspoon/init.lua    tests/run.sh  tests/stubs/    config.env
 queue/ tmp/ log/ state/ PAUSE    runtime data, not in git
 ```
