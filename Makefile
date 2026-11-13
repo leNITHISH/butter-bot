@@ -8,6 +8,8 @@ check: lint test
 
 lint:
 	@for f in $(SCRIPTS); do dash -n $$f || exit 1; done
+	@for f in bin/*.sh tests/run.sh; do [ -x $$f ] || { echo "not executable: $$f (chmod +x)"; exit 1; }; done
+	@echo "executable bits: ok"
 	@echo "dash -n: ok"
 	@shellcheck -x -S warning -s sh $(SCRIPTS)
 	@echo "shellcheck: ok"
