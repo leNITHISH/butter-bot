@@ -5,7 +5,9 @@
 --     dofile("/Users/you/mac-watch/hammerspoon/init.lua")
 --
 -- What it does:
---   * spacebar pressed        -> bin/trigger.sh space   (trigger.sh debounces)
+--   * spacebar pressed        -> bin/trigger.sh space, taken SPACE_SETTLE_SEC after the
+--                                last space of a typing burst, so the shot shows what you
+--                                just typed (trigger.sh still applies SPACE_MIN_GAP_SEC)
 --   * wake from sleep         -> bin/trigger.sh wake
 --   * screen locked/unlocked  -> bin/trigger.sh lock / unlock
 -- Every trigger goes through bin/trigger.sh, which checks the lid and the PAUSE file.
@@ -50,7 +52,31 @@ end
 -- ---------------------------------------------------------------- spacebar --
 
 local SPACE_KEYCODE = hs.keycodes.map["space"]
-local lastSpawn = 0
+local SPACE_SETTLE_SEC = 3     -- take the shot this long after the last space...
+local SPACE_MAX_WAIT_SEC = 30  -- ...but never wait longer than this during endless typing
+local burstStart = nil         -- when the current burst of spaces began (a timestamp, not a key)
+
+-- Restarts on every call: it only fires once the spaces have stopped for
+-- SPACE_SETTLE_SEC. It holds no key data, only a timer.
+MacWatch.spaceSettle = hs.timer.delayed.new(SPACE_SETTLE_SEC, function()
+  burstStart = nil
+  fire("space")
+end)
+
+local function spacePressed()
+  local now = hs.timer.secondsSinceEpoch()
+  if burstStart == nil then
+    burstStart = now
+  end
+  if now - burstStart >= SPACE_MAX_WAIT_SEC then
+    -- typing without a pause for a long time: take a shot now anyway
+    burstStart = now
+    MacWatch.spaceSettle:stop()
+    fire("space")
+  else
+    MacWatch.spaceSettle:start()
+  end
+end
 
 -- The ONLY place a key press is looked at. It compares the key code with the
 -- spacebar's and ignores auto-repeat. It returns false in every case so the key
@@ -62,13 +88,7 @@ local function onKeyDown(event)
   if event:getProperty(hs.eventtap.event.properties.keyboardEventAutorepeat) ~= 0 then
     return false
   end
-  -- cheap local rate limit so holding a busy typist's space bar does not start
-  -- a process every time; trigger.sh applies SPACE_MIN_GAP_SEC on top of this
-  local now = hs.timer.secondsSinceEpoch()
-  if now - lastSpawn >= 5 then
-    lastSpawn = now
-    fire("space")
-  end
+  spacePressed()
   return false
 end
 

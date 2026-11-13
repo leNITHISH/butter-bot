@@ -1,7 +1,7 @@
 -- Runs hammerspoon/init.lua against a fake `hs` and checks its behaviour.
 -- The fake key event ONLY answers getKeyCode() and getProperty(autorepeat);
 -- any other method call (reading characters, flags...) raises an error.
-local tasks, taps, watchers, timers = {}, {}, {}, {}
+local tasks, taps, watchers, timers, delayeds = {}, {}, {}, {}, {}
 local now = 1000
 local autorepeat = 0
 
@@ -32,7 +32,14 @@ hs = {
   end },
   timer = { secondsSinceEpoch = function() return now end,
     doAfter = function(sec, fn) local t = { sec = sec, fn = fn }; timers[#timers + 1] = t; return t end,
-    doEvery = function(sec, fn) return { sec = sec, fn = fn } end },
+    doEvery = function(sec, fn) return { sec = sec, fn = fn } end,
+    delayed = { new = function(sec, fn)
+      local d = { sec = sec, fn = fn, running = false, starts = 0 }
+      d.start = function(self) self.running = true; self.starts = self.starts + 1 end
+      d.stop = function(self) self.running = false end
+      delayeds[#delayeds + 1] = d
+      return d
+    end } },
   caffeinate = { watcher = { systemDidWake = 1, screensDidWake = 2, screensDidLock = 3, screensDidUnlock = 4,
     new = function(fn) local w = { fn = fn }; w.start = function() end; watchers[#watchers + 1] = w; return w end } },
   autoLaunch = function() end,
@@ -51,19 +58,24 @@ local function check(cond, msg) if cond then print("  ok   " .. msg) else failur
 local tap = taps[1]
 check(tap.on, "event tap started")
 
+local settle = delayeds[1]
 tap.fn(key_event(0, 0))
-check(#tasks == 0, "other keys do nothing")
+check(#tasks == 0 and not settle.running, "other keys do nothing")
 local ret = tap.fn(key_event(49, 0))
-check(#tasks == 1 and tasks[1][2] == "space", "spacebar runs trigger.sh space")
+check(#tasks == 0, "spacebar does not shoot immediately")
+check(settle.running and settle.sec == 3, "spacebar starts a 3 s settle timer")
 check(ret == false, "listener never swallows a key")
-check(tasks[1][1]:match("/bin/trigger%.sh$") ~= nil, "runs bin/trigger.sh")
+now = now + 1; tap.fn(key_event(49, 0)); now = now + 1; tap.fn(key_event(49, 0))
+check(settle.starts == 3 and #tasks == 0, "more spaces just restart the timer (no shot while typing)")
 tap.fn(key_event(49, 1))
-check(#tasks == 1, "auto-repeat ignored")
-tap.fn(key_event(49, 0))
-check(#tasks == 1, "second press within 5 s is rate-limited locally")
-now = now + 6
-tap.fn(key_event(49, 0))
-check(#tasks == 2, "press after the local gap runs again")
+check(settle.starts == 3, "auto-repeat ignored")
+settle.fn()
+check(#tasks == 1 and tasks[1][2] == "space", "after the pause: trigger.sh space")
+check(tasks[1][1]:match("/bin/trigger%.sh$") ~= nil, "runs bin/trigger.sh")
+-- endless typing: a shot is forced after 30 s
+now = now + 10; tap.fn(key_event(49, 0))
+for _ = 1, 11 do now = now + 3; tap.fn(key_event(49, 0)) end
+check(#tasks == 2 and tasks[2][2] == "space", "typing for 30 s without a pause still gives a shot")
 
 local w = watchers[1]
 w.fn(1)

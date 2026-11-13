@@ -32,6 +32,7 @@ new_env() {
   mkdir -p "$STUB_DIR" "$STUB_RCLONE_ROOT" "$MW_HOME"
   cp "$ROOT/config.env" "$MW_HOME/config.env"
   echo "SKIP_IDENTICAL=0" >> "$MW_HOME/config.env"   # the skip tests turn it on
+  echo "UPLOAD_EVERY_SEC=0" >> "$MW_HOME/config.env"   # the batching test sets it back
   PATH=$ROOT/tests/stubs:$ORIG_PATH
   export PATH
   # fast internals
@@ -205,6 +206,34 @@ if section "upload: loud auth failures, no secrets in logs"; then
   rm "$STUB_DIR/rclone_fail"; run upload.sh
   eq "recovery: uploaded" 0 "$(nshots)"
   check "recovery: error flag cleared" test ! -f "$S/error-upload"
+  end_env
+fi
+
+if section "batching"; then
+  new_env
+  cfg UPLOAD_EVERY_SEC=300
+  run trigger.sh space; run upload.sh
+  eq "first run uploads (nothing was sent yet)" 0 "$(nshots)"
+  run trigger.sh wake; run upload.sh
+  eq "within the batch window: shot waits in the queue" 1 "$(nshots)"
+  eq "...and no rclone move was attempted" 1 "$(grep -c ' move ' "$STUB_DIR/rclone_calls")"
+  run trigger.sh lock; run trigger.sh unlock
+  echo 1000 > "$S/last-flush"; run upload.sh
+  eq "after the window: the whole batch goes at once" 0 "$(nshots)"
+  eq "...in 4 files" 4 "$(nfiles "$D/shots")"
+  end_env
+  new_env
+  cfg UPLOAD_EVERY_SEC=300
+  run trigger.sh space; run upload.sh; run trigger.sh wake
+  touch "$STUB_DIR/offline"; run upload.sh
+  rm "$STUB_DIR/offline"; run upload.sh
+  eq "network back: backlog uploaded immediately, not after the window" 0 "$(nshots)"
+  end_env
+  new_env
+  cfg UPLOAD_EVERY_SEC=300
+  run trigger.sh space; run upload.sh; run trigger.sh wake
+  mkdir -p "$D/control"; : > "$D/control/snap-now"; run upload.sh
+  eq "snap-now flushes everything at once" 0 "$(nshots)"
   end_env
 fi
 

@@ -76,9 +76,13 @@ find "$MW_TMP" -type f -mmin +360 -exec rm -f {} \; 2>/dev/null
 # ---------------------------------------------------------------- online ----
 
 prev_online=$(cat "$MW_STATE/online" 2>/dev/null)
+force_flush=0
 if is_online; then
   echo yes > "$MW_STATE/online"
-  [ "$prev_online" = no ] && log INFO "back online (queue: $(queue_count) file(s))"
+  if [ "$prev_online" = no ]; then
+    log INFO "back online (queue: $(queue_count) file(s)); uploading the backlog now"
+    force_flush=1
+  fi
 else
   echo no > "$MW_STATE/online"
   [ "$prev_online" = no ] || log INFO "offline; shots will queue locally (queue: $(queue_count) file(s))"
@@ -234,7 +238,7 @@ if [ "$want_settle" = 1 ]; then
   sleep "$SETTLE_SEC"   # rclone --min-age 15s would skip the shot we just took
   flush_queue 1
 else
-  flush_queue 0
+  flush_queue "$force_flush"
 fi
 
 # ------------------------------------------------------------------ prune ---

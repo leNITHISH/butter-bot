@@ -47,10 +47,10 @@ mw_defaults() {
   MARKER_MAX_AGE_MIN=30
   RECORD_SEC=300
   RECORD_PRESET=Preset1280x720
-  SPACE_MIN_GAP_SEC=60
+  SPACE_MIN_GAP_SEC=30
   EVENT_MIN_GAP_SEC=30
   # Internal knobs (not in config.env; the tests override them via the environment)
-  UPLOAD_EVERY_SEC=${UPLOAD_EVERY_SEC:-120}
+  UPLOAD_EVERY_SEC=${UPLOAD_EVERY_SEC:-300}
   PRUNE_EVERY_SEC=${PRUNE_EVERY_SEC:-3600}
   SETTLE_SEC=${SETTLE_SEC:-16}            # wait for rclone --min-age 15s after a remote snap
   WATCHDOG_POLL_SEC=${WATCHDOG_POLL_SEC:-2}
@@ -85,7 +85,7 @@ mw_load_config() {
   _int_or CONTROL_POLL_SEC 60
   _int_or MARKER_MAX_AGE_MIN 30
   _int_or RECORD_SEC 300
-  _int_or SPACE_MIN_GAP_SEC 60
+  _int_or SPACE_MIN_GAP_SEC 30
   _int_or EVENT_MIN_GAP_SEC 30
   _int_or UPLOAD_EVERY_SEC 120
   _int_or PRUNE_EVERY_SEC 3600

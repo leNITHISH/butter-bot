@@ -5,8 +5,7 @@ A small, free, unattended utility for one MacBook (macOS 26 Tahoe), for its owne
 While the lid is open it takes a screenshot every 5 minutes and uploads it to Google Drive.
 If the Mac is offline the shots queue on disk and upload when the internet returns.
 From a phone you can drop a marker into Drive to get an instant screenshot or a
-5-minute screen recording. Optionally the spacebar, waking up, and locking/unlocking also
-take a shot.
+5-minute screen recording. Optionally the spacebar (taken 3 seconds after you stop typing, so it shows what you just typed), waking up, and locking/unlocking also take a shot.
 
 Nothing is hidden. It is easy to see (`status.sh`), pause (`touch PAUSE`) and remove
 (`uninstall.sh`). macOS's own recording indicator is left alone.
@@ -117,7 +116,8 @@ run `./bin/install.sh` again (those are written into the LaunchAgents).
 | `CONTROL_POLL_SEC` | 60 | marker polling and upload job interval |
 | `MARKER_MAX_AGE_MIN` | 30 | older markers are ignored |
 | `RECORD_SEC` | 300 | recording length |
-| `SPACE_MIN_GAP_SEC`, `EVENT_MIN_GAP_SEC` | 60, 30 | at most one spacebar / wake / lock shot per this many seconds |
+| `UPLOAD_EVERY_SEC` | 300 | shots are batched: uploaded together at most this often (immediately after the network returns, and for `snap-now`) |
+| `SPACE_MIN_GAP_SEC`, `EVENT_MIN_GAP_SEC` | 30, 30 | at most one spacebar / wake / lock shot per this many seconds |
 
 **Decisions made while you were away** (the three "open" questions): `KEEP_AWAKE` is **off**,
 so the Mac sleeps as normal and a sleeping Mac captures nothing. Turn it on in `config.env` if
