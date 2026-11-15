@@ -1,0 +1,13 @@
+{
+  "name": "butter-bot-worker",
+  "private": true,
+  "description": "mac-watch remote monitor: Cloudflare Worker + D1, bytes in Backblaze B2",
+  "scripts": {
+    "test": "node ../tests/worker_test.js",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.162.0"
+  }
+}

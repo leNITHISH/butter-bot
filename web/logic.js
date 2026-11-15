@@ -1,25 +1,29 @@
-/* mac-watch dashboard: pure logic (no DOM, no network). Works in the browser and in node. */
+/* mac-watch: pure logic shared by the web page (browser) and the Worker (bundled), also loaded by
+   the node tests. No DOM, no network. */
 (function (root, factory) {
   if (typeof module === "object" && module.exports) module.exports = factory();
   else root.MacWatchLogic = factory();
 })(typeof self !== "undefined" ? self : this, function () {
   "use strict";
 
-  // Settings that can be changed from this page. Numbers only, and the ranges are
-  // enforced AGAIN on the Mac (bin/lib.sh: remote_bounds). tests/ checks both tables match.
+  // Settings that can be changed from the web page. Numbers only. The Worker validates them
+  // (validateSettings), and the Mac validates the ones it receives AGAIN with its own table
+  // (bin/lib.sh: remote_bounds). tests/ check that the two tables match.
+  // worker: true = used by the Worker only, never sent to the Mac.
   var SETTINGS = [
-    { key: "INTERVAL_SEC", label: "Screenshot every (seconds)", min: 30, max: 86400, help: "Normal: 300 (5 minutes)." },
-    { key: "SPACE_MIN_GAP_SEC", label: "Spacebar shots: at most one per (seconds)", min: 5, max: 3600, help: "Taken 3 s after you stop typing." },
-    { key: "EVENT_MIN_GAP_SEC", label: "Wake / lock / unlock shots: at most one per (seconds)", min: 5, max: 3600, help: "" },
-    { key: "SKIP_IDENTICAL", label: "Skip unchanged screens (1 = yes, 0 = no)", min: 0, max: 1, help: "" },
-    { key: "SKIP_MAX_AGE_SEC", label: "...but keep at least one shot per (seconds)", min: 60, max: 86400, help: "" },
-    { key: "JPEG_QUALITY", label: "JPEG quality", min: 10, max: 100, help: "Lower = smaller files." },
-    { key: "MAX_WIDTH", label: "Maximum picture width (pixels)", min: 320, max: 4000, help: "" },
-    { key: "RECORD_SEC", label: "Recording length (seconds)", min: 10, max: 1800, help: "Used by the Record button." },
-    { key: "UPLOAD_EVERY_SEC", label: "Upload in batches every (seconds)", min: 0, max: 3600, help: "Higher = fewer Google calls, slower to appear." },
-    { key: "RETENTION_DAYS", label: "Delete shots from Drive after (days)", min: 3, max: 365, help: "Files in keep/ are never deleted." },
-    { key: "KEEP_AWAKE", label: "Keep the Mac awake while the lid is open (1 = yes, 0 = no)", min: 0, max: 1, help: "Uses more battery." },
-    { key: "MARKER_MAX_AGE_MIN", label: "Ignore commands older than (minutes)", min: 1, max: 1440, help: "" }
+    { key: "INTERVAL_SEC", label: "Screenshot every (seconds)", min: 30, max: 86400, def: 300, help: "Normal: 300 (5 minutes)." },
+    { key: "SPACE_MIN_GAP_SEC", label: "Spacebar shots: at most one per (seconds)", min: 5, max: 3600, def: 30, help: "Taken 3 s after you stop typing." },
+    { key: "EVENT_MIN_GAP_SEC", label: "Wake / lock / unlock shots: at most one per (seconds)", min: 5, max: 3600, def: 30, help: "" },
+    { key: "SKIP_IDENTICAL", label: "Skip unchanged screens (1 = yes, 0 = no)", min: 0, max: 1, def: 1, help: "" },
+    { key: "SKIP_MAX_AGE_SEC", label: "...but keep at least one shot per (seconds)", min: 60, max: 86400, def: 3600, help: "" },
+    { key: "JPEG_QUALITY", label: "JPEG quality", min: 10, max: 100, def: 60, help: "Lower = smaller files." },
+    { key: "MAX_WIDTH", label: "Maximum picture width (pixels)", min: 320, max: 4000, def: 1440, help: "" },
+    { key: "RECORD_SEC", label: "Recording length (seconds)", min: 10, max: 1800, def: 300, help: "Used by the Record button." },
+    { key: "UPLOAD_EVERY_SEC", label: "Upload in batches every (seconds)", min: 0, max: 3600, def: 300, help: "\"Screenshot now\" is always sent at once." },
+    { key: "KEEP_AWAKE", label: "Keep the Mac awake while the lid is open (1 = yes, 0 = no)", min: 0, max: 1, def: 0, help: "Uses more battery." },
+    { key: "MARKER_MAX_AGE_MIN", label: "Ignore commands older than (minutes)", min: 1, max: 1440, def: 30, help: "A command sent while the Mac was asleep runs only if it wakes within this time." },
+    { key: "RETENTION_DAYS", label: "Delete shots and recordings after (days)", min: 3, max: 365, def: 14, help: "Files you Keep are never deleted." },
+    { key: "STORAGE_SOFT_LIMIT_GB", label: "Storage guard: delete oldest days above (GB)", min: 1, max: 9, def: 8, worker: true, help: "Backblaze is free up to 10 GB. Kept files are never deleted." }
   ];
 
   function settingByKey(k) {
@@ -27,33 +31,35 @@
     return null;
   }
 
-  // "KEY=value" lines -> { KEY: number }. Ignores comments and anything invalid.
-  function parseConfig(text) {
-    var out = {};
-    String(text || "").split(/\r?\n/).forEach(function (line) {
-      var m = /^([A-Z_]+)=(\d{1,7})$/.exec(line.trim());
-      if (!m) return;
-      var s = settingByKey(m[1]);
-      var v = parseInt(m[2], 10);
-      if (s && v >= s.min && v <= s.max) out[m[1]] = v;
-    });
-    return out;
+  // The keys the Mac accepts (must equal bin/lib.sh remote_keys).
+  function macKeys() {
+    return SETTINGS.filter(function (s) { return !s.worker; }).map(function (s) { return s.key; });
   }
 
-  // { KEY: value } -> { text, errors }. Refuses out-of-range / non-integer values.
-  function buildConfig(values) {
-    var lines = ["# written by the mac-watch web page"], errors = [];
-    SETTINGS.forEach(function (s) {
-      var raw = values[s.key];
-      if (raw === undefined || raw === null || raw === "") return;      // not overridden
-      var v = Number(raw);
+  // { KEY: value } -> { values: { KEY: number }, errors: [..] }. Empty values = "not overridden".
+  // Unknown keys and anything that is not a whole number in range are errors.
+  function validateSettings(input) {
+    var values = {}, errors = [];
+    if (!input || typeof input !== "object" || Array.isArray(input)) return { values: values, errors: ["settings must be an object"] };
+    Object.keys(input).forEach(function (k) {
+      var s = settingByKey(k), raw = input[k];
+      if (!s) { errors.push("unknown setting " + String(k).slice(0, 40)); return; }
+      if (raw === undefined || raw === null || raw === "") return;
+      var v = typeof raw === "number" ? raw : (/^\d{1,7}$/.test(String(raw).trim()) ? Number(String(raw).trim()) : NaN);
       if (!Number.isInteger(v) || v < s.min || v > s.max) {
         errors.push(s.key + " must be a whole number from " + s.min + " to " + s.max);
         return;
       }
-      lines.push(s.key + "=" + v);
+      values[k] = v;
     });
-    return { text: lines.join("\n") + "\n", errors: errors };
+    return { values: values, errors: errors };
+  }
+
+  // The effective value of a setting: the override, else the default.
+  function effective(values, key) {
+    var s = settingByKey(key);
+    if (values && Object.prototype.hasOwnProperty.call(values, key)) return values[key];
+    return s ? s.def : undefined;
   }
 
   function ageString(seconds) {
@@ -64,15 +70,15 @@
     return Math.round(s / 86400) + " days";
   }
 
-  // The Mac publishes status.json about every 5 minutes while it is awake with the lid open.
-  function statusHealth(updatedEpoch, nowEpoch) {
-    if (!updatedEpoch) return { level: "bad", text: "No status from the Mac yet" };
-    var age = nowEpoch - updatedEpoch;
+  // How long since the Mac last polled the Worker (it polls every 20 s while awake).
+  function seenHealth(lastSeenEpoch, nowEpoch) {
+    if (!lastSeenEpoch) return { level: "bad", text: "The Mac has not connected yet" };
+    var age = nowEpoch - lastSeenEpoch;
     if (age < 8 * 60) return { level: "ok", text: "Mac seen " + ageString(age) + " ago" };
     if (age < 20 * 60) return { level: "warn", text: "Mac last seen " + ageString(age) + " ago" };
     return {
       level: "bad",
-      text: "Mac last seen " + ageString(age) + " ago: asleep, lid closed, offline, or paused with the PAUSE file"
+      text: "Mac last seen " + ageString(age) + " ago: asleep, offline, lid closed, or PAUSE file"
     };
   }
 
@@ -87,16 +93,35 @@
     n = Number(n) || 0;
     if (n < 1024) return n + " B";
     if (n < 1048576) return Math.round(n / 1024) + " KB";
-    return (n / 1048576).toFixed(1) + " MB";
+    if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
+    return (n / 1073741824).toFixed(2) + " GB";
   }
 
-  // Marker names are matched case-insensitively by prefix on the Mac.
-  var COMMANDS = { snap: "snap-now", record: "record-5min", pause: "pause", resume: "resume" };
+  // Storage meter colour: amber from 70 %, red from 90 %.
+  function meterLevel(fraction) {
+    if (fraction >= 0.9) return "bad";
+    if (fraction >= 0.7) return "warn";
+    return "ok";
+  }
+
+  // Object keys the Worker accepts anywhere (the same regexes are used server-side).
+  var KEY_RE = /^(shots|thumbs|recordings|keep)\/(\d{4}-\d{2}-\d{2})\/([A-Za-z0-9._-]+\.(?:jpg|mov))$/;
+  var LIVE_RE = /^live\/([A-Za-z0-9._-]+\.jpg)$/;
+  function parseKey(key) {
+    if (typeof key !== "string" || key.length > 200) return null;
+    var m = KEY_RE.exec(key);
+    if (m) return { kind: m[1], day: m[2], name: m[3] };
+    m = LIVE_RE.exec(key);
+    if (m) return { kind: "live", day: "", name: m[1] };
+    return null;
+  }
+
+  var COMMANDS = ["snap", "record", "pause", "resume", "live-on", "live-off"];
 
   return {
-    SETTINGS: SETTINGS, COMMANDS: COMMANDS,
-    parseConfig: parseConfig, buildConfig: buildConfig,
-    ageString: ageString, statusHealth: statusHealth,
-    parseShotName: parseShotName, formatBytes: formatBytes
+    SETTINGS: SETTINGS, COMMANDS: COMMANDS, KEY_RE: KEY_RE, LIVE_RE: LIVE_RE,
+    settingByKey: settingByKey, macKeys: macKeys, validateSettings: validateSettings, effective: effective,
+    ageString: ageString, seenHealth: seenHealth, parseShotName: parseShotName,
+    formatBytes: formatBytes, meterLevel: meterLevel, parseKey: parseKey
   };
 });

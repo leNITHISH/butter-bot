@@ -1,0 +1,27 @@
+# mac-watch remote monitor (Cloudflare Workers free plan, no card).
+# Deploy:   npx wrangler deploy        (from this folder)
+# Secrets:  ./put-secrets.sh           (never in this file, never in git)
+name = "butter-bot"
+main = "index.js"
+compatibility_date = "2026-11-01"
+workers_dev = true
+preview_urls = false
+
+# The website (web/) is served by the same Worker. run_worker_first lets the Worker add the
+# security headers (CSP etc.) to every page and asset.
+[assets]
+directory = "../web"
+binding = "ASSETS"
+run_worker_first = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "macwatch"
+database_id = "04e9140b-217c-469c-bceb-527e8ac4534d"
+
+# */15: retention + storage guard + old commands.  17 3: daily reconcile of D1 against B2.
+[triggers]
+crons = ["*/15 * * * *", "17 3 * * *"]
+
+[observability]
+enabled = true

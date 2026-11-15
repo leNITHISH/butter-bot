@@ -11,3 +11,7 @@
 # secrets must never be here, but belt and braces
 rclone.conf
 *.token
+/.mac-token
+.dev.vars
+.wrangler/
+node_modules/
