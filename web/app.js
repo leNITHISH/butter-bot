@@ -30,12 +30,15 @@
     toast((e && e.message) || "Something went wrong", true);
   }
 
+  // label/value tiles: rows of [label, value, class ("warn", "bad", "wide")]
   function dl(target, rows) {
     clear(target);
     rows.forEach(function (r) {
       if (r[1] === undefined || r[1] === null || r[1] === "") return;
-      target.appendChild(el("dt", "", r[0]));
-      target.appendChild(el("dd", r[2] || "", String(r[1])));
+      var tile = el("div", "tile" + (r[2] ? " " + r[2] : ""));
+      tile.appendChild(el("dt", "", r[0]));
+      tile.appendChild(el("dd", "", String(r[1])));
+      target.appendChild(tile);
     });
   }
 
@@ -60,6 +63,7 @@
   function showSignIn() {
     stopTimers();
     $("nav").hidden = true;
+    $("btn-signout").hidden = true;
     SCREENS.forEach(function (s) { $("screen-" + s).hidden = true; });
     $("screen-signin").hidden = false;
     current = "signin";
@@ -105,6 +109,7 @@
     api.status().then(function (st) {
       $("screen-signin").hidden = true;
       $("nav").hidden = false;
+      $("btn-signout").hidden = false;
       SCREENS.forEach(function (s) {
         $("screen-" + s).hidden = s !== name;
         $("nav-" + s).className = s === name ? "active" : "";
@@ -128,7 +133,7 @@
   var lastStatus = null;
   function startHome(st) {
     renderStatus(st);
-    loadLatest();
+    loadRecent();
     loadHomeStorage();
     every(5000, function () { api.status().then(renderStatus).catch(fail); });
     every(30000, loadHomeStorage);
@@ -138,7 +143,7 @@
   function renderStatus(st) {
     lastStatus = st;
     var h = L.seenHealth(st.lastSeen, st.now);
-    $("seen-dot").className = "dot " + h.level;
+    $("seen-dot").className = "pulse " + h.level;
     $("seen-text").textContent = h.text;
     var s = st.status || {};
     var paused = st.macPaused === "remote" ? "paused from this page (press Resume)" :
@@ -154,7 +159,7 @@
       ["Status from", s.updated ? L.ageString(st.now - s.updated) + " ago" : ""],
       ["Polling", st.watching ? "fast (this page is open)" : "normal"],
       ["Commands waiting", st.pendingCommands ? String(st.pendingCommands) : ""],
-      ["Errors", s.errors || "", "bad"]
+      ["Errors", s.errors || "", "bad wide"]
     ]);
     $("btn-live").textContent = st.live ? "Stop live view" : "Live view";
     $("live-card").hidden = !st.live;
@@ -172,7 +177,7 @@
       var n = 0;
       var t = setInterval(function () {
         n++;
-        loadLatest(since).then(function (found) { if (found || n >= 20) clearInterval(t); });
+        loadRecent(since).then(function (found) { if (found || n >= 20) clearInterval(t); });
       }, 2000);
     });
   });
@@ -201,26 +206,111 @@
     }).catch(fail);
   }
 
-  var latestKey = null;
-  function loadLatest(since) {
+  // ---------------------------------------------------- recent shots carousel ---
+  // The newest RECENT_N screenshots (across days), swipeable (CSS scroll-snap), with
+  // arrows, dots, a counter and arrow keys. Tap a slide to open it full size.
+  var RECENT_N = 12;
+  var car = { items: [], index: 0, firstKey: null };
+
+  function loadRecent(since) {
     return api.days("shots").then(function (d) {
-      if (!d.days.length) { $("latest-meta").textContent = "No screenshots yet."; return false; }
-      return api.files("shots", d.days[0].day, "", 1).then(function (f) {
-        var x = f.files[0];
-        if (!x) return false;
-        if (x.key !== latestKey) {
-          latestKey = x.key;
-          $("latest-img").src = api.imgUrl(x.key);
-          $("latest-open").hidden = false;
-          $("latest-open").onclick = function () { openViewer(x); };
-        }
-        var p = L.parseShotName(x.name);
-        $("latest-meta").textContent = p.date + " " + p.time + " · " + p.reason + " · " + L.formatBytes(x.bytes);
-        return !since || x.uploaded >= since;
-      });
+      var items = [];
+      var days = d.days.slice(0, 4);
+      var next = function (i) {
+        if (i >= days.length || items.length >= RECENT_N) return Promise.resolve(items);
+        return api.files("shots", days[i].day, "", RECENT_N - items.length).then(function (f) {
+          items = items.concat(f.files);
+          return next(i + 1);
+        });
+      };
+      return next(0);
+    }).then(function (items) {
+      if (!items.length) {
+        $("carousel").hidden = true;
+        clear($("car-dots"));
+        $("car-meta").textContent = "No screenshots yet. Tap Screenshot now.";
+        return false;
+      }
+      if (items[0].key !== car.firstKey || items.length !== car.items.length) renderCarousel(items);
+      return !since || items[0].uploaded >= since;
     }).catch(function (e) { fail(e); return false; });
   }
 
+  function renderCarousel(items) {
+    car.items = items;
+    car.firstKey = items[0].key;
+    var track = $("car-track"), dots = $("car-dots");
+    clear(track); clear(dots);
+    items.forEach(function (x, i) {
+      var p = L.parseShotName(x.name);
+      var slide = el("button", "slide");
+      slide.type = "button";
+      slide.setAttribute("aria-label", "Screenshot " + (p.date || "") + " " + (p.time || x.name) + ", open full size");
+      var img = el("img");
+      img.loading = i < 2 ? "eager" : "lazy";
+      img.decoding = "async";
+      img.alt = "";
+      img.src = api.imgUrl(x.key);
+      slide.appendChild(img);
+      var cap = el("span", "slide-cap");
+      cap.appendChild(el("span", "chip", p.time ? p.time.slice(0, 5) : x.name));
+      if (p.reason) cap.appendChild(el("span", "chip reason", p.reason));
+      slide.appendChild(cap);
+      slide.addEventListener("click", function () { openViewer(x); });
+      track.appendChild(slide);
+      var dot = el("button");
+      dot.type = "button";
+      dot.setAttribute("aria-label", "Show screenshot " + (i + 1));
+      dot.addEventListener("click", function () { carGo(i); });
+      dots.appendChild(dot);
+    });
+    $("carousel").hidden = false;
+    track.scrollLeft = 0;
+    carSync(0);
+  }
+
+  function carSync(i) {
+    car.index = i;
+    var x = car.items[i];
+    if (!x) return;
+    var p = L.parseShotName(x.name);
+    $("car-count").textContent = (i + 1) + " / " + car.items.length;
+    $("car-meta").textContent = (p.date ? p.date + " " + p.time : x.name) + " · " + L.formatBytes(x.bytes) +
+      (i === 0 ? " · newest" : "");
+    Array.prototype.forEach.call($("car-dots").children, function (d, j) { d.className = j === i ? "on" : ""; });
+    $("car-prev").disabled = i === 0;
+    $("car-next").disabled = i === car.items.length - 1;
+  }
+  function carGo(i) {
+    var track = $("car-track");
+    i = Math.max(0, Math.min(car.items.length - 1, i));
+    var slide = track.children[i];
+    if (slide) track.scrollTo({ left: slide.offsetLeft - track.offsetLeft - parseFloat(getComputedStyle(track).paddingLeft || 0), behavior: "smooth" });
+    carSync(i);
+  }
+  var carTimer = null;
+  $("car-track").addEventListener("scroll", function () {
+    clearTimeout(carTimer);
+    carTimer = setTimeout(function () {
+      var track = $("car-track");
+      var w = track.children[0] ? track.children[0].getBoundingClientRect().width + 10 : track.clientWidth;
+      var i = Math.round(track.scrollLeft / w);
+      if (i !== car.index) carSync(Math.max(0, Math.min(car.items.length - 1, i)));
+    }, 60);
+  });
+  $("car-prev").addEventListener("click", function () { carGo(car.index - 1); });
+  $("car-next").addEventListener("click", function () { carGo(car.index + 1); });
+  $("car-track").addEventListener("keydown", function (e) {
+    if (e.key === "ArrowLeft") { e.preventDefault(); carGo(car.index - 1); }
+    if (e.key === "ArrowRight") { e.preventDefault(); carGo(car.index + 1); }
+  });
+
+  function untilGuard(days) {
+    if (days === null || days === undefined) return "";
+    if (days > 730) return "years away at this rate";
+    if (days > 60) return "about " + Math.round(days / 30) + " months away";
+    return "about " + days + " days away";
+  }
   function meter(bar, s) {
     bar.style.width = Math.min(100, Math.round(s.fraction * 1000) / 10) + "%";
     bar.className = s.level;
@@ -229,7 +319,7 @@
     return api.storage().then(function (s) {
       meter($("home-meter-bar"), s);
       $("home-storage-text").textContent = L.formatBytes(s.usedBytes) + " of " + L.formatBytes(s.freeBytes) + " free allowance" +
-        (s.daysUntilSoftLimit !== null ? " · about " + s.daysUntilSoftLimit + " days until the guard starts deleting" : "");
+        (s.daysUntilSoftLimit !== null ? " · auto-cleanup " + untilGuard(s.daysUntilSoftLimit) : "");
     }).catch(fail);
   }
 
@@ -430,13 +520,13 @@
   $("viewer-close").addEventListener("click", closeViewer);
   $("viewer-keep").addEventListener("click", function () {
     if (!viewing) return;
-    keepKeys([viewing.key]).then(function () { closeViewer(); if (F.day) showDay(F.day); });
+    keepKeys([viewing.key]).then(function () { closeViewer(); if (F.day) showDay(F.day); if (current === "home") { car.firstKey = null; loadRecent(); } });
   });
   $("viewer-delete").addEventListener("click", function () {
     if (!viewing) return;
     var x = viewing;
     closeViewer();
-    purgeFlow({ mode: "keys", keys: [x.key] }, function () { if (F.day) showDay(F.day); loadLatest(); });
+    purgeFlow({ mode: "keys", keys: [x.key] }, function () { if (F.day) showDay(F.day); car.firstKey = null; loadRecent(); });
   });
 
   // ------------------------------------------------------------ storage ---
@@ -450,7 +540,7 @@
       $("storage-used").textContent = L.formatBytes(s.usedBytes) + " used of " + L.formatBytes(s.freeBytes) +
         " (" + Math.round(s.fraction * 100) + " %)";
       $("storage-growth").textContent = "Growing about " + L.formatBytes(s.avgPerDay) + " per day (last 7 days). " +
-        (s.daysUntilSoftLimit !== null ? "At that rate the storage guard (" + L.formatBytes(s.softLimitBytes) + ") starts deleting the oldest days in about " + s.daysUntilSoftLimit + " days." : "");
+        (s.daysUntilSoftLimit !== null ? "The storage guard (" + L.formatBytes(s.softLimitBytes) + ", deletes the oldest days) is " + untilGuard(s.daysUntilSoftLimit) + "." : "");
       dl($("storage-kinds"), ["shots", "thumbs", "recordings", "keep", "live"].map(function (k) {
         var x = s.byKind[k] || { files: 0, bytes: 0 };
         return [k, x.files + " file(s) · " + L.formatBytes(x.bytes)];
@@ -496,15 +586,17 @@
       clear(box);
       r.table.forEach(function (s) {
         var id = "set-" + s.key;
+        var field = el("div", "field");
         var lab = el("label", "", s.label);
         lab.htmlFor = id;
         var inp = el("input");
         inp.id = id; inp.type = "number"; inp.min = s.min; inp.max = s.max; inp.step = 1; inp.inputMode = "numeric";
         inp.placeholder = "default " + s.def;
         if (Object.prototype.hasOwnProperty.call(r.values, s.key)) inp.value = r.values[s.key];
-        box.appendChild(lab);
-        box.appendChild(inp);
-        box.appendChild(el("p", "small", s.min + " to " + s.max + (s.help ? ". " + s.help : "") + (s.worker ? " (on the server)" : "")));
+        field.appendChild(lab);
+        field.appendChild(inp);
+        field.appendChild(el("p", "small", s.min + " to " + s.max + (s.help ? ". " + s.help : "") + (s.worker ? " (on the server)" : "")));
+        box.appendChild(field);
       });
     }).catch(fail);
   }
