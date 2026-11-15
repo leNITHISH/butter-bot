@@ -671,8 +671,13 @@ if section "setup-remote"; then
   eq "setup-remote exits 0" 0 $?
   has "rclone b2 remote written" "$STUB_DIR/rclone.conf" "type = b2"
   has "...with the keyID" "$STUB_DIR/rclone.conf" "account = K005abcdef"
-  hasnt "...and the key only obscured" "$STUB_DIR/rclone.conf" "SECRETAPPKEY0123456789"
+  has "...and the key as rclone expects it for b2 (plain, NOT obscured)" "$STUB_DIR/rclone.conf" "key = SECRETAPPKEY0123456789"
   hasnt "the key never appears in rclone's arguments" "$STUB_DIR/rclone_calls" "SECRETAPPKEY"
+  if [ -n "$REAL_RCLONE" ]; then
+    # the config written above, read by the REAL rclone: it must hand Backblaze exactly this key
+    eq "real rclone reads back the same keyID and key" "K005abcdef SECRETAPPKEY0123456789 b2" \
+      "$(RCLONE_CONFIG=$STUB_DIR/rclone.conf "$REAL_RCLONE" config dump 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin)["b2"]; print(d["account"], d["key"], d["type"])')"
+  fi
   hasnt "the key is never printed" "$T/sr.txt" "SECRETAPPKEY"
   eq "rclone config is chmod 600" "-rw-------" "$(ls -l "$STUB_DIR/rclone.conf" | cut -c1-10)"
   check "a Mac token was created" test -s "$MW_HOME/.mac-token"

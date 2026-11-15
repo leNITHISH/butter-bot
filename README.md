@@ -80,7 +80,7 @@ phone, tests the stop switch, and prints PASS or FAIL. If anything fails, run
 
 | What | Where | Who can read it |
 |---|---|---|
-| Mac's Backblaze key (`macwatch-mac`) | rclone config on the Mac, obscured, `chmod 600` | you |
+| Mac's Backblaze key (`macwatch-mac`) | rclone config on the Mac (plain text, as rclone always stores B2 keys), `chmod 600` | you |
 | Mac token | `~/mac-watch/.mac-token`, `chmod 600`, git-ignored | you; the Worker only has its SHA-256 |
 | Worker's Backblaze key (`macwatch-worker`), session secret, allowed e-mail, Google client ID | Cloudflare Worker secrets (`./worker/put-secrets.sh`) | the Worker |
 | Your browser session | an `HttpOnly; Secure; SameSite=Strict` cookie, 14 days | nobody, not even the page's JavaScript |

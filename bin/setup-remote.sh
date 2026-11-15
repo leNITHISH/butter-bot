@@ -52,11 +52,11 @@ else
   ask_hidden "   applicationKey (hidden): "
   app_key=$ans
   [ -n "$app_key" ] || { say "   no applicationKey given. Nothing changed."; exit 1; }
-  # rclone stores the key obscured. `rclone obscure -` reads it from stdin, so it never
-  # appears in a process list. The section is appended directly for the same reason.
-  obsc=$(printf '%s' "$app_key" | rclone obscure - 2>/dev/null)
-  app_key=
-  [ -n "$obsc" ] || { say "   rclone obscure failed. Nothing changed."; exit 1; }
+  # rclone keeps a B2 key as plain text in its config (the b2 "key" option is not a
+  # password-type option, so it must NOT be obscured; that gives 401 bad_auth_token).
+  # The section is appended with printf (a shell builtin), so the key never appears in a
+  # process list; the file is chmod 600 before anything is written.
+  case $app_key in *[!A-Za-z0-9+/=_-]*) say "   that does not look like an applicationKey (stray spaces?). Nothing changed."; exit 1 ;; esac
   [ -n "$cfg" ] || { say "   cannot find the rclone config file location. Nothing changed."; exit 1; }
   mkdir -p "$(dirname "$cfg")"
   touch "$cfg" && chmod 600 "$cfg"
@@ -64,10 +64,10 @@ else
     printf '\n[%s]\n' "$RCLONE_REMOTE"
     printf 'type = b2\n'
     printf 'account = %s\n' "$key_id"
-    printf 'key = %s\n' "$obsc"
+    printf 'key = %s\n' "$app_key"
     printf 'hard_delete = true\n'
   } >> "$cfg"
-  obsc=
+  app_key=
   say "   rclone remote '$RCLONE_REMOTE' created (config is chmod 600)."
 fi
 [ -f "$cfg" ] && chmod 600 "$cfg"
