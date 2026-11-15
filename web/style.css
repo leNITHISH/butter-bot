@@ -192,6 +192,61 @@ ol.rows .tag { background: var(--orange); justify-self: end; margin-top: 4px; }
 .thumb .video-label { display: grid; place-items: center; aspect-ratio: 16 / 10; border: var(--stroke-hairline) solid var(--ink);
                       font: 600 14px var(--mono); background: var(--code-bg); }
 
+/* ------------------------------------------------------------ timeline --- */
+.timeline .day-head { margin: 26px 0 10px; }
+.timeline .day-head button { white-space: nowrap; min-height: 0; }
+.timeline .day:first-child .day-head { margin-top: 6px; }
+.timeline .grid { margin: 0; }
+@media (max-width: 600px) {
+  .timeline .grid { grid-template-columns: repeat(3, 1fr); gap: 10px 6px; }
+  .thumb .thumb-cap { font-size: 11px; gap: 4px; }
+  /* the reason as a small square in its accent (the full word is in the tile's label) */
+  .thumb .thumb-cap .tag { font-size: 0; width: 10px; height: 10px; padding: 0; }
+}
+#files-sentinel { height: 1px; }
+
+/* ------------------------------------------------------------ gallery (full-screen viewer) --- */
+html.gal-open, html.gal-open body { overflow: hidden; }
+.gal { position: fixed; inset: 0; z-index: 50; background: rgba(17, 17, 17, var(--gal-dim, 1)); color: var(--cream);
+       display: flex; flex-direction: column; outline: none; touch-action: none; overscroll-behavior: contain; }
+.gal-stage { position: absolute; inset: 0; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+.gal-track { display: flex; height: 100%; will-change: transform; }
+.gal-panel { flex: 0 0 100%; height: 100%; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+.gal-media { max-width: 100%; max-height: 100%; object-fit: contain; display: block; transform-origin: center center;
+             -webkit-user-drag: none; user-select: none; }
+.gal.zoomed .gal-stage { cursor: grab; }
+img.gal-media { cursor: zoom-in; }
+.gal.zoomed img.gal-media { cursor: grab; }
+video.gal-media { width: 100%; height: 100%; background: var(--ink); }
+.gal-bar { position: absolute; left: 0; right: 0; z-index: 2; background: var(--cream); color: var(--ink);
+           display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 8px max(12px, env(safe-area-inset-left)); }
+.gal-top { top: 0; border-bottom: var(--stroke-heavy) solid var(--ink); padding-top: max(8px, env(safe-area-inset-top)); }
+.gal-bottom { bottom: 0; border-top: var(--stroke-hairline) solid var(--ink); padding-bottom: max(8px, env(safe-area-inset-bottom)); }
+.gal-count { font: 700 13px/22px var(--mono); background: var(--orange); padding: 0 7px; }
+.gal-when { font: 500 13px/1.3 var(--mono); letter-spacing: .02em; }
+.gal-reason { display: inline-flex; }
+.gal-close { margin-left: auto; }
+.gal-bottom button, .gal-bottom a.button { min-height: 40px; padding: 6px 12px; font-size: 15px; }
+.gal-bottom button.link { padding: 0 4px; }
+.gal-bottom > :first-child { margin-right: auto; }
+.gal-bottom > :last-child { margin-left: auto; }
+.gal.bare .gal-bar, .gal.bare .gal-info { display: none; }
+.gal-info { position: absolute; right: 12px; bottom: 76px; z-index: 3; margin: 0; width: min(92vw, 420px);
+            background: var(--cream); color: var(--ink); border: var(--stroke-bold) solid var(--ink); padding: 6px 12px; }
+.gal-info div { display: grid; grid-template-columns: 7em 1fr; gap: 12px; padding: 6px 0; border-bottom: var(--stroke-hairline) solid var(--rule); }
+.gal-info div:last-child { border-bottom: 0; }
+.gal-info dt { color: var(--gray); }
+.gal-info dd { margin: 0; font: 400 13px/1.5 var(--mono); word-break: break-all; }
+.gal-note { position: absolute; left: 50%; top: 64px; transform: translateX(-50%); z-index: 3; margin: 0;
+            background: var(--ink); color: var(--cream); border-left: 6px solid var(--orange); padding: 8px 14px; font-weight: 540; }
+@media (max-width: 600px) {
+  .gal-date { display: none; }                      /* time only; the date is under info */
+  .gal-bottom .gal-nav, .gal-bottom .gal-zoom { display: none; }   /* swipe and pinch do these */
+  .gal-bottom { gap: 6px; justify-content: space-between; }
+  .gal-bottom > :first-child, .gal-bottom > :last-child { margin: 0; }
+  .gal-bottom button, .gal-bottom a.button { padding: 6px 9px; font-size: 14px; flex: 1 1 auto; }
+}
+
 /* ------------------------------------------------------------ settings --- */
 .fields .field { display: grid; grid-template-columns: 1fr minmax(8em, 11em); gap: 4px 20px; align-items: center;
                  padding: 10px 0; border-bottom: var(--stroke-hairline) solid var(--rule); }

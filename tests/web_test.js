@@ -29,6 +29,9 @@ function eq(a, b, msg) { const s = JSON.stringify(a) === JSON.stringify(b); ok(s
   const html = fs.readFileSync(path.join(ROOT, "web/index.html"), "utf8");
   const app = fs.readFileSync(path.join(ROOT, "web/app.js"), "utf8");
   const apijs = fs.readFileSync(path.join(ROOT, "web/api.js"), "utf8");
+  const galjs = fs.readFileSync(path.join(ROOT, "web/gallery.js"), "utf8");
+  ok(/<script src="gallery\.js" defer><\/script>\s*<script src="app\.js" defer>/.test(html), "gallery.js loads before app.js");
+  ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/.test(galjs), "gallery.js builds its DOM with createElement/textContent only");
   const used = new Set(); let mm; const re = /\$\("([a-z0-9-]+)"\)/g;
   while ((mm = re.exec(app))) used.add(mm[1]);
   // ids built from a list: nav-<screen>, screen-<screen>, root-<kind>
@@ -40,7 +43,7 @@ function eq(a, b, msg) { const s = JSON.stringify(a) === JSON.stringify(b); ok(s
   ok(!/innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/.test(app + apijs), "no HTML injection or eval anywhere (textContent only)");
   ok(!/<script(?![^>]*\bsrc=)[^>]*>/.test(html), "no inline scripts (CSP script-src 'self')");
   ok(!/\son[a-z]+\s*=/.test(html), "no inline event handlers");
-  ok(!/window\.(alert|confirm|prompt)\(|[^.\w](alert|confirm|prompt)\(/.test(app), "no native alert/confirm/prompt (a <dialog> is used)");
+  ok(!/window\.(alert|confirm|prompt)\(|[^.\w](alert|confirm|prompt)\(/.test(app + galjs), "no native alert/confirm/prompt (a <dialog> is used)");
   ok(!/client_secret|GOCSPX|refresh_token|B2_APP_KEY|applicationKey/i.test(app + apijs + html), "no secrets in the web files");
   ok(fs.readFileSync(path.join(ROOT, "web/.assetsignore"), "utf8").includes("README.md"), "web/README.md is not published");
   const css = fs.readFileSync(path.join(ROOT, "web/style.css"), "utf8");

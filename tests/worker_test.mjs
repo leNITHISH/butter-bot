@@ -313,6 +313,7 @@ console.log("== purge");
   await S.env.DB.prepare("INSERT INTO files VALUES ('keep/2026-11-01/old-kept.jpg','keep','2026-11-01','old-kept.jpg',1,'',1)").run();
   let r = await (await S.api("POST", "/api/purge", { mode: "olderThanDays", days: 7, dryRun: true })).json();
   eq([r.dryRun, r.files, r.bytes], [true, 13, 3 * 2 * 1100 + 5000], "dry run: counts files and bytes, deletes nothing");
+  eq(r.items, 7, "dry run also counts items without thumbnails (6 shots + 1 recording) for the question to the user");
   eq(S.b2.names().length, 26, "dry run changed nothing in B2");
   r = await (await S.api("POST", "/api/purge", { mode: "olderThanDays", days: 7 })).json();
   ok(r.dryRun === true, "dryRun defaults to true (must be false explicitly to delete)");

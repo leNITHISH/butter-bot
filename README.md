@@ -99,8 +99,10 @@ Sign out on the web page signs out **every** device.
 | See the screen right now | **Live view**: a small frame every 4 s, stops 10 minutes after you close the page |
 | Screen recording from my phone | **Record** (length = `RECORD_SEC`, default 5 min) |
 | Pause remotely / resume | **Pause** / **Resume**. A local `PAUSE` file is stronger and only the Mac can lift it |
-| Download one screenshot to my phone | **Files**, pick a day, tap the shot, **Download** |
-| Keep something forever | **Keep** in the viewer, or long-press to select several |
+| Browse everything | **Files**: one timeline, newest first, grouped by day, loads as you scroll |
+| Look at a shot properly | tap it: full screen, swipe for the next/previous (across days), pinch or double-tap to zoom, drag to pan, swipe down or Back to close, tap to hide the bars; on a computer arrow keys, wheel zoom, Esc |
+| Download one screenshot to my phone | open it, **download** |
+| Keep something forever | **keep** in the viewer, or long-press to select several |
 | Free up space | **Files > Clean up** (older than N days) or **Delete this day**; it shows the count and MB first |
 | Watch the storage | **Storage**: used of 10 GB, per day, growth, days until the guard, the Mac's free disk |
 | Copy things to my other laptop | `./bin/archive-pull.sh` there (see **Archive** below) |

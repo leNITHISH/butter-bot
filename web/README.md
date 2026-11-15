@@ -38,6 +38,13 @@ of icons, light only. Fonts: Atkinson Hyperlegible Next and Mono, self-hosted in
 (OFL, licences beside them) because the CSP allows fonts from this site only. Screenshot reasons
 wear the system's accent colours.
 
+Files is a timeline (`app.js`) with a full-screen viewer (`gallery.js`, no library): swipe across
+days (it loads more as you go), pinch / double-tap / wheel zoom, pan, pull down or Back to close,
+tap to hide the bars, the Fullscreen API where the browser has it (not on iPhone, where the viewer
+already fills the screen), keep / delete / download / info in place. The thumbnail shows first,
+the full image replaces it when loaded, and the neighbours load a moment later so a swipe lands
+on a sharp picture (each full image is one B2 download; the browser caches them).
+
 Code: `worker/core.js` (all logic, tested in node), `worker/b2.js` (B2 native API),
 `worker/index.js` (Cloudflare glue), `worker/schema.sql`, `worker/wrangler.toml`. Page:
 `index.html`, `app.js`, `api.js`, `logic.js` (shared with the Worker), `style.css`.

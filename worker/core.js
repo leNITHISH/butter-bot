@@ -499,8 +499,10 @@ export function makeApp(deps) {
         return err(400, "bad mode");
       }
     }
-    const total = await env.DB.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b FROM files WHERE " + where).bind(...args).first();
-    if (b.dryRun !== false) return json({ dryRun: true, files: num(total.n), bytes: num(total.b) });
+    const total = await env.DB.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b, " +
+      "COALESCE(SUM(CASE WHEN kind = 'thumbs' THEN 0 ELSE 1 END), 0) AS items FROM files WHERE " + where).bind(...args).first();
+    // files: everything that goes (thumbnails too); items: what a person would count (shots, recordings, kept files)
+    if (b.dryRun !== false) return json({ dryRun: true, files: num(total.n), items: num(total.items), bytes: num(total.b) });
     const rows = (await env.DB.prepare("SELECT key, bytes FROM files WHERE " + where + " ORDER BY day, key LIMIT 200").bind(...args).all()).results || [];
     const budget = { left: SUBREQ_BUDGET };
     const b2 = deps.b2(env, { kv, budget, now });

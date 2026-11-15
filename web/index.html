@@ -12,6 +12,7 @@
   <script src="https://accounts.google.com/gsi/client" async></script>
   <script src="logic.js" defer></script>
   <script src="api.js" defer></script>
+  <script src="gallery.js" defer></script>
   <script src="app.js" defer></script>
 </head>
 <body>
@@ -117,13 +118,8 @@
       </div>
       <p class="caption-line">
         <span id="files-path" class="caption"></span>
-        <button id="btn-files-up" class="caption caption-link link" type="button" hidden>ALL DAYS &gt;</button>
+        <button id="btn-select" class="caption caption-link link" type="button">SELECT</button>
       </p>
-      <ol id="days-list" class="rows"></ol>
-      <div id="day-tools" class="actions" hidden>
-        <button id="btn-select" type="button">select</button>
-        <button id="btn-purge-day" class="danger" type="button">delete this day</button>
-      </div>
       <div id="select-bar" class="select-bar" hidden>
         <span id="select-count" class="caption"></span>
         <button id="btn-sel-download" type="button">download</button>
@@ -131,7 +127,8 @@
         <button id="btn-sel-delete" class="danger" type="button">delete</button>
         <button id="btn-sel-cancel" class="link" type="button">cancel</button>
       </div>
-      <div id="files-grid" class="grid"></div>
+      <div id="timeline" class="timeline"></div>
+      <div id="files-sentinel" aria-hidden="true"></div>
       <button id="btn-more" class="wide" type="button" hidden>load more</button>
       <p id="files-msg" class="subtext"></p>
 
@@ -185,18 +182,6 @@
     </div>
     <p class="footer-links">mac-watch <span>·</span> backblaze b2 <span>·</span> cloudflare workers</p>
   </footer>
-
-  <dialog id="viewer">
-    <img id="viewer-img" alt="" hidden>
-    <video id="viewer-video" controls playsinline preload="metadata" hidden></video>
-    <p id="viewer-meta" class="caption"></p>
-    <div class="actions">
-      <a id="viewer-download" class="button primary" href="#">download</a>
-      <button id="viewer-keep" type="button">keep</button>
-      <button id="viewer-delete" class="danger" type="button">delete</button>
-      <button id="viewer-close" class="link" type="button">close</button>
-    </div>
-  </dialog>
 
   <dialog id="confirm">
     <p class="caption-line"><span class="caption">CONFIRM</span></p>

@@ -62,15 +62,21 @@
   }
 
   // ------------------------------------------------------------ confirm ---
-  var confirmCb = null;
-  function ask(text, yesLabel, cb) {
+  var confirmCb = null, confirmNo = null;
+  function ask(text, yesLabel, cb, no) {
     $("confirm-text").textContent = text;
-    $("confirm-yes").textContent = yesLabel || "Delete";
-    confirmCb = cb;
+    $("confirm-yes").textContent = yesLabel || "delete";
+    confirmCb = cb; confirmNo = no || null;
     $("confirm").showModal();
   }
-  $("confirm-yes").addEventListener("click", function () { $("confirm").close(); var c = confirmCb; confirmCb = null; if (c) c(); });
-  $("confirm-no").addEventListener("click", function () { $("confirm").close(); confirmCb = null; });
+  function answer(yes) {
+    var c = yes ? confirmCb : confirmNo;
+    confirmCb = null; confirmNo = null;
+    if (c) c();
+  }
+  $("confirm-yes").addEventListener("click", function () { $("confirm").close(); answer(true); });
+  $("confirm-no").addEventListener("click", function () { $("confirm").close(); answer(false); });
+  $("confirm").addEventListener("cancel", function () { answer(false); });   // Esc
 
   // ------------------------------------------------------------ screens ---
   var SCREENS = ["home", "files", "storage", "settings"];
@@ -276,7 +282,7 @@
       cap.appendChild(el("span", "chip", p.time ? p.time.slice(0, 5) : x.name));
       if (p.reason) cap.appendChild(reasonTag(p.reason));
       slide.appendChild(cap);
-      slide.addEventListener("click", function () { openViewer(x); });
+      slide.addEventListener("click", function () { openGallery(car.items, i); });
       track.appendChild(slide);
       var dot = el("button");
       dot.type = "button";
@@ -344,109 +350,158 @@
   }
 
   // -------------------------------------------------------------- files ---
-  var F = { root: "shots", day: null, next: null, selecting: false, selected: {}, items: [] };
+  // A timeline like a photo app: everything newest first under day headers, loaded as you
+  // scroll. Tapping a picture opens the gallery on the same list, so swiping crosses days.
+  var F = { root: "shots", days: [], dayIdx: 0, after: "", items: [], loading: null, gen: 0, selecting: false, selected: {} };
+  var KIND_LABEL = { shots: "SCREENSHOTS", recordings: "RECORDINGS", keep: "KEEP" };
 
   function startFiles() { showRoot(F.root); }
   ["shots", "recordings", "keep"].forEach(function (k) {
     $("root-" + k).addEventListener("click", function () { showRoot(k); });
   });
-  $("btn-files-up").addEventListener("click", function () { showRoot(F.root); });
-
   function setTabs() {
     ["shots", "recordings", "keep"].forEach(function (k) { $("root-" + k).className = k === F.root ? "tab active" : "tab"; });
   }
   function endSelect() {
     F.selecting = false; F.selected = {};
     $("select-bar").hidden = true;
-    $("btn-select").textContent = "select";
+    $("btn-select").textContent = "SELECT";
     Array.prototype.forEach.call(document.querySelectorAll(".thumb.selected"), function (n) { n.classList.remove("selected"); });
   }
+  function dayLabel(day) {
+    var d = new Date(day + "T12:00:00"), t = new Date();
+    var diff = Math.round((new Date(t.getFullYear(), t.getMonth(), t.getDate()) - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+    var o = { weekday: "short", day: "2-digit", month: "short" };
+    if (d.getFullYear() !== t.getFullYear()) o.year = "numeric";
+    var name = d.toLocaleDateString("en-GB", o).replace(",", "");
+    return (diff === 0 ? "today · " : diff === 1 ? "yesterday · " : "") + name;
+  }
+  function hasMoreFiles() { return F.dayIdx < F.days.length; }
 
   function showRoot(kind) {
-    F.root = kind; F.day = null; F.next = null; endSelect(); setTabs();
-    $("btn-files-up").hidden = true;
-    $("day-tools").hidden = true;
+    F.gen++;
+    F.root = kind; F.days = []; F.dayIdx = 0; F.after = ""; F.items = []; F.loading = null;
+    endSelect(); setTabs();
+    clear($("timeline"));
     $("btn-more").hidden = true;
-    clear($("files-grid"));
-    $("files-path").textContent = { shots: "SCREENSHOTS // BY DAY", recordings: "RECORDINGS // BY DAY", keep: "KEEP // NEVER DELETED AUTOMATICALLY" }[kind];
-    $("files-msg").textContent = "loading";
+    $("files-msg").textContent = "";
+    $("files-path").textContent = KIND_LABEL[kind] + " // loading";
+    var gen = F.gen;
     api.days(kind).then(function (d) {
-      var ul = $("days-list");
-      clear(ul);
-      $("files-msg").textContent = d.days.length ? "" : "Nothing here yet.";
-      d.days.forEach(function (x, i) {
-        var li = el("li");
-        li.appendChild(el("span", "tag", pad2(i + 1)));
-        var body = el("div");
-        var b = el("button", "row-title", x.day);
-        b.type = "button";
-        b.addEventListener("click", function () { showDay(x.day); });
-        body.appendChild(b);
-        body.appendChild(el("p", "subtext", x.files + " file(s) · " + L.formatBytes(x.bytes)));
-        li.appendChild(body);
-        ul.appendChild(li);
-      });
+      if (gen !== F.gen) return;
+      F.days = d.days;
+      var n = 0, b = 0;
+      d.days.forEach(function (x) { n += x.files; b += x.bytes; });
+      $("files-path").textContent = KIND_LABEL[kind] + " // " + n + " in " + d.days.length + " day" + (d.days.length === 1 ? "" : "s") + " · " + L.formatBytes(b);
+      if (!d.days.length) {
+        $("files-msg").textContent = kind === "keep" ? "Nothing kept yet. Open a screenshot and tap keep." : "Nothing here yet.";
+        return;
+      }
+      fillScreen();
     }).catch(fail);
   }
 
-  function showDay(day) {
-    F.day = day; F.next = null; F.items = []; endSelect();
-    clear($("days-list"));
-    clear($("files-grid"));
-    $("btn-files-up").hidden = false;
-    $("day-tools").hidden = F.root === "keep";
-    $("files-path").textContent = { shots: "SCREENSHOTS", recordings: "RECORDINGS", keep: "KEEP" }[F.root] + " // " + day;
-    loadMore();
+  // keep loading while the end of the list is near the screen
+  function fillScreen() {
+    loadMoreFiles().then(function (added) {
+      if (added && current === "files" && nearEnd()) fillScreen();
+    });
   }
-  $("btn-more").addEventListener("click", loadMore);
+  function nearEnd() { return $("files-sentinel").getBoundingClientRect().top < window.innerHeight + 900; }
 
-  function loadMore() {
+  // Loads the next page (60) of the current day, or the next day. Resolves true when it added
+  // something (the gallery uses this to keep swiping past what is on screen).
+  function loadMoreFiles() {
+    if (F.loading) return F.loading;
+    if (!hasMoreFiles()) return Promise.resolve(false);
+    var gen = F.gen, day = F.days[F.dayIdx];
     $("files-msg").textContent = "loading";
-    api.files(F.root, F.day, F.next, 60).then(function (f) {
-      F.next = f.next;
-      $("btn-more").hidden = !f.next;
-      $("files-msg").textContent = "";
-      f.files.forEach(addTile);
-    }).catch(fail);
+    F.loading = api.files(F.root, day.day, F.after, 60).then(function (f) {
+      if (gen !== F.gen) return false;
+      var grid = daySection(day);
+      f.files.forEach(function (x) { addTile(x, grid); });
+      if (f.next) F.after = f.next; else { F.dayIdx++; F.after = ""; }
+      $("files-msg").textContent = hasMoreFiles() ? "" : (F.items.length ? "That is everything." : "");
+      $("btn-more").hidden = !hasMoreFiles();
+      gallery.refresh();
+      return f.files.length > 0 || hasMoreFiles();
+    }).catch(function (e) { fail(e); return false; }).then(function (r) { if (gen === F.gen) F.loading = null; return r; });
+    return F.loading;
+  }
+  if ("IntersectionObserver" in window) {
+    new IntersectionObserver(function (es) {
+      if (es[0].isIntersecting && current === "files") fillScreen();
+    }, { rootMargin: "900px 0px" }).observe($("files-sentinel"));
+  }
+  $("btn-more").addEventListener("click", fillScreen);
+
+  function daySection(day) {
+    var found = $("timeline").querySelector('section[data-day="' + day.day + '"] .grid');
+    if (found) return found;
+    var sec = el("section", "day");
+    sec.setAttribute("data-day", day.day);
+    var head = el("p", "caption-line day-head");
+    head.appendChild(el("span", "caption", dayLabel(day.day) + " // " + day.files + " · " + L.formatBytes(day.bytes)));
+    if (F.root !== "keep") {
+      var del = el("button", "caption caption-link link", "DELETE DAY");
+      del.type = "button";
+      del.addEventListener("click", function () {
+        purgeFlow({ mode: "day", day: day.day, kinds: F.root === "recordings" ? ["recordings"] : ["shots"] }, function () { showRoot(F.root); });
+      });
+      head.appendChild(del);
+    }
+    sec.appendChild(head);
+    var grid = el("div", "grid");
+    sec.appendChild(grid);
+    $("timeline").appendChild(sec);
+    return grid;
   }
 
-  function addTile(x) {
+  function addTile(x, grid) {
     F.items.push(x);
     var p = L.parseShotName(x.name);
     var b = el("button", "thumb");
     b.type = "button";
     b.setAttribute("data-key", x.key);
+    b.setAttribute("aria-label", (p.date ? p.date + " " + p.time : x.name) + (p.reason ? ", " + p.reason : "") + ", open");
     if (/\.mov$/.test(x.name)) {
       b.appendChild(el("span", "video-label", "recording · " + L.formatBytes(x.bytes)));
     } else {
       var img = el("img");
       img.loading = "lazy";
-      img.alt = x.name;
+      img.decoding = "async";
+      img.alt = "";
       img.src = api.imgUrl(x.thumb || x.key);
       b.appendChild(img);
     }
     var cap = el("span", "thumb-cap");
-    cap.appendChild(el("span", "", p.time || x.name));
+    cap.appendChild(el("span", "", p.time ? p.time.slice(0, 5) : x.name));
     if (p.reason) cap.appendChild(reasonTag(p.reason));
     b.appendChild(cap);
     var pressTimer = null, longPressed = false;
     b.addEventListener("pointerdown", function () {
       longPressed = false;
-      pressTimer = setTimeout(function () { longPressed = true; startSelect(); toggle(b, x); }, 550);
+      pressTimer = setTimeout(function () { longPressed = true; if (!F.selecting) startSelect(); toggle(b, x); }, 550);
     });
     ["pointerup", "pointerleave", "pointercancel"].forEach(function (ev) { b.addEventListener(ev, function () { clearTimeout(pressTimer); }); });
     b.addEventListener("contextmenu", function (e) { e.preventDefault(); });
     b.addEventListener("click", function () {
       if (longPressed) { longPressed = false; return; }
-      if (F.selecting) toggle(b, x); else openViewer(x);
+      if (F.selecting) toggle(b, x);
+      else openGallery(F.items, F.items.indexOf(x), { loadMore: loadMoreFiles, hasMore: hasMoreFiles });
     });
-    $("files-grid").appendChild(b);
+    grid.appendChild(b);
+  }
+  function removeTile(key) {
+    for (var i = 0; i < F.items.length; i++) if (F.items[i].key === key) { F.items.splice(i, 1); break; }
+    var n = $("timeline").querySelector('.thumb[data-key="' + key + '"]');
+    if (n) n.parentNode.removeChild(n);
   }
 
   function startSelect() {
     F.selecting = true;
     $("select-bar").hidden = false;
-    $("btn-select").textContent = "done";
+    $("btn-select").textContent = "DONE";
     $("btn-sel-keep").hidden = F.root === "keep";
     updateSelCount();
   }
@@ -475,14 +530,15 @@
   $("btn-sel-keep").addEventListener("click", function () {
     var keys = selectedList().map(function (x) { return x.key; });
     if (!keys.length) return;
-    keepKeys(keys).then(function () { endSelect(); showDay(F.day); });
+    keepKeys(keys).then(function () { endSelect(); showRoot(F.root); });
   });
   $("btn-sel-delete").addEventListener("click", function () {
     var keys = selectedList().map(function (x) { return x.key; });
     if (!keys.length) return;
-    purgeFlow({ mode: "keys", keys: keys }, function () { endSelect(); showDay(F.day); });
+    purgeFlow({ mode: "keys", keys: keys }, function () { endSelect(); showRoot(F.root); });
   });
 
+  // resolves with the number kept
   function keepKeys(keys) {
     var chunks = [];
     for (var i = 0; i < keys.length; i += 10) chunks.push(keys.slice(i, i + 10));
@@ -490,21 +546,32 @@
     return chunks.reduce(function (p, c) {
       return p.then(function () { return api.keep(c).then(function (r) { kept += r.kept.length; failed += r.failed.length; }); });
     }, Promise.resolve()).then(function () {
-      toast("Kept " + kept + (failed ? ", " + failed + " failed (try again)" : "") + ". Find them under Keep.", failed > 0);
-    }).catch(fail);
+      toast("Kept " + kept + (failed ? ", " + failed + " failed (try again)" : "") + ". Find them under keep.", failed > 0);
+      return kept;
+    }).catch(function (e) { fail(e); return 0; });
+  }
+
+  // what the question calls the things being deleted
+  function purgeNoun(body) {
+    var kinds = body.mode === "keys" ? body.keys.map(function (k) { return k.split("/")[0]; }) : (body.kinds || ["shots", "recordings"]);
+    var only = function (k) { return kinds.every(function (x) { return x === k; }); };
+    return only("shots") ? "screenshot" : only("recordings") ? "recording" : "file";
   }
 
   // dry run -> confirm with the numbers -> delete in batches until done
-  function purgeFlow(body, done) {
+  function purgeFlow(body, done, cancelled) {
     var dry = Object.assign({}, body, { dryRun: true });
+    var no = function () { if (cancelled) cancelled(); };
     api.purge(dry).then(function (r) {
-      if (!r.files) { toast("Nothing to delete."); return; }
-      ask("Delete " + r.files + " file(s), " + L.formatBytes(r.bytes) + "? This cannot be undone.", "delete", function () {
+      if (!r.files) { toast("Nothing to delete."); no(); return; }
+      var n = r.items !== undefined ? r.items : r.files;
+      var noun = purgeNoun(body);
+      ask("Delete " + n + " " + noun + (n === 1 ? "" : "s") + " (" + L.formatBytes(r.bytes) + (r.files > n ? ", with thumbnails" : "") + ")? This cannot be undone.", "delete", function () {
         var total = 0;
         var step = function () {
           return api.purge(Object.assign({}, body, { dryRun: false })).then(function (x) {
             total += x.deleted;
-            $("purge-msg").textContent = "Deleted " + total + " of " + r.files + "...";
+            $("purge-msg").textContent = "Deleted " + total + " of " + r.files + " files...";
             if (x.more && x.deleted > 0) return step();
           });
         };
@@ -512,48 +579,43 @@
           $("purge-msg").textContent = "Deleted " + total + " file(s).";
           toast("Deleted " + total + " file(s).");
           if (done) done();
-        }).catch(fail);
-      });
-    }).catch(fail);
+        }).catch(function (e) { fail(e); no(); });
+      }, no);
+    }).catch(function (e) { fail(e); no(); });
   }
-  $("btn-purge-day").addEventListener("click", function () {
-    if (!F.day) return;
-    purgeFlow({ mode: "day", day: F.day, kinds: F.root === "recordings" ? ["recordings"] : ["shots"] }, function () { showRoot(F.root); });
-  });
   $("btn-purge-preview").addEventListener("click", function () {
     var d = parseInt($("purge-days").value, 10);
     if (!(d >= 1 && d <= 3650)) { toast("Enter a number of days from 1 to 3650.", true); return; }
     purgeFlow({ mode: "olderThanDays", days: d }, function () { showRoot(F.root); });
   });
 
-  // ------------------------------------------------------------- viewer ---
-  var viewing = null;
-  function openViewer(x) {
-    viewing = x;
-    var isVideo = /\.mov$/.test(x.name);
-    var img = $("viewer-img"), vid = $("viewer-video");
-    img.hidden = isVideo; vid.hidden = !isVideo;
-    if (isVideo) { img.removeAttribute("src"); vid.src = api.imgUrl(x.key); }
-    else { vid.removeAttribute("src"); img.src = api.imgUrl(x.key); img.alt = x.name; }
-    var p = L.parseShotName(x.name);
-    $("viewer-meta").textContent = (p.date ? p.date + " " + p.time + " · " + p.reason + " · " : x.name + " · ") + L.formatBytes(x.bytes);
-    $("viewer-download").href = api.dlUrl(x.key);
-    $("viewer-download").setAttribute("download", x.name);
-    $("viewer-keep").hidden = !/^(shots|recordings)\//.test(x.key);
-    $("viewer").showModal();
-  }
-  function closeViewer() { $("viewer-video").pause(); $("viewer").close(); }
-  $("viewer-close").addEventListener("click", closeViewer);
-  $("viewer-keep").addEventListener("click", function () {
-    if (!viewing) return;
-    keepKeys([viewing.key]).then(function () { closeViewer(); if (F.day) showDay(F.day); if (current === "home") { car.firstKey = null; loadRecent(); } });
+  // ------------------------------------------------------------ gallery ---
+  var galSource = {};
+  var gallery = window.MacWatchGallery.create({
+    imgUrl: api.imgUrl, dlUrl: api.dlUrl, parseName: L.parseShotName, formatBytes: L.formatBytes, reasonTag: reasonTag,
+    loadMore: function () { return galSource.loadMore ? galSource.loadMore() : Promise.resolve(false); },
+    hasMore: function () { return galSource.hasMore ? galSource.hasMore() : false; },
+    canKeep: function (it) { return /^(shots|recordings)\//.test(it.key); },
+    onKeep: function (it) {
+      return keepKeys([it.key]).then(function (n) {
+        if (n) { removeTile(it.key); refreshCar(); }
+        return n > 0;
+      });
+    },
+    onDelete: function (it) {
+      return new Promise(function (resolve) {
+        purgeFlow({ mode: "keys", keys: [it.key] }, function () { removeTile(it.key); refreshCar(); resolve(true); }, function () { resolve(false); });
+      });
+    },
+    onClose: function (it) {
+      // land the grid on the picture you were looking at
+      if (!it || current !== "files") return;
+      var n = $("timeline").querySelector('.thumb[data-key="' + it.key + '"]');
+      if (n && n.scrollIntoView) n.scrollIntoView({ block: "center" });
+    }
   });
-  $("viewer-delete").addEventListener("click", function () {
-    if (!viewing) return;
-    var x = viewing;
-    closeViewer();
-    purgeFlow({ mode: "keys", keys: [x.key] }, function () { if (F.day) showDay(F.day); car.firstKey = null; loadRecent(); });
-  });
+  function openGallery(list, i, source) { galSource = source || {}; gallery.open(list, i); }
+  function refreshCar() { car.firstKey = null; if (current === "home") loadRecent(); }
 
   // ------------------------------------------------------------ storage ---
   function startStorage() {
