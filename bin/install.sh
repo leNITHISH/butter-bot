@@ -1,10 +1,13 @@
 #!/bin/sh
-# install.sh [--wrapper] [--hammerspoon]
+# install.sh [--wrapper] [--hammerspoon] [--no-hammerspoon]
 # Idempotent: safe to run again (do so after editing INTERVAL_SEC or CONTROL_POLL_SEC).
 #   (default)       three LaunchAgents run /bin/sh directly
 #   --wrapper       run them through ~/mac-watch/MacWatch.app instead. Fallback for when
 #                   Screen Recording permission will not stick to /bin/sh (see README).
-#   --hammerspoon   after asking, add ONE line to ~/.hammerspoon/init.lua (Phase 3 triggers)
+#   --hammerspoon   after asking, add ONE line to ~/.hammerspoon/init.lua (Phase 3 triggers),
+#                   and start Hammerspoon at every login (a fourth LaunchAgent). While
+#                   enabled, mac-watch also restarts Hammerspoon if it is not running.
+#   --no-hammerspoon  undo that: remove the login agent and stop restarting it
 # Writes only inside this folder and ~/Library/LaunchAgents. No sudo. No power settings.
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
@@ -13,11 +16,13 @@ mw_load_config
 
 use_wrapper=0
 want_hs=0
+no_hs=0
 for arg in "$@"; do
   case $arg in
     --wrapper) use_wrapper=1 ;;
     --hammerspoon) want_hs=1 ;;
-    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    --no-hammerspoon) no_hs=1 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
@@ -71,7 +76,9 @@ s() { printf '    <string>%s</string>\n' "$(printf '%s' "$1" | xml)"; }
 
 # program_args SCRIPT ARG...   -> the ProgramArguments array body
 program_args() {
-  if [ "$use_wrapper" = 1 ]; then
+  if [ "${plain_args:-0}" = 1 ]; then
+    for _a in "$@"; do s "$_a"; done
+  elif [ "$use_wrapper" = 1 ]; then
     s /usr/bin/open; s -n; s -W; s -g; s -a; s "$APP"; s --args
     for _a in "$@"; do s "$_a"; done
   else
@@ -116,8 +123,10 @@ PLIST
   echo "$_file"
 }
 
+# The capture agent wakes up every CONTROL_POLL_SEC; trigger.sh only takes a shot once
+# INTERVAL_SEC has passed. That is what lets INTERVAL_SEC be changed live (from the web page).
 capture_extra="  <key>StartInterval</key>
-  <integer>$INTERVAL_SEC</integer>
+  <integer>$CONTROL_POLL_SEC</integer>
   <key>RunAtLoad</key>
   <true/>
 "
@@ -142,8 +151,23 @@ cap_plist=$(write_plist capture "$capture_extra" "$MW_BIN/trigger.sh" interval)
 upl_plist=$(write_plist upload  "$upload_extra"  "$MW_BIN/upload.sh")
 rec_plist=$(write_plist record  "$record_extra"  "$MW_BIN/record.sh" --request)
 
+# --- Hammerspoon login agent (only when opted in) ----------------------------
+hs_plist=
+if [ "$no_hs" = 1 ]; then
+  launchctl bootout "gui/$uid/com.macwatch.hammerspoon" >/dev/null 2>&1
+  rm -f "$AGENTS_DIR/com.macwatch.hammerspoon.plist" "$MW_STATE/hammerspoon-enabled"
+  say "  Hammerspoon login agent removed"
+elif [ "$want_hs" = 1 ] || [ -e "$MW_STATE/hammerspoon-enabled" ]; then
+  : > "$MW_STATE/hammerspoon-enabled"
+  plain_args=1
+  hs_plist=$(write_plist hammerspoon "  <key>RunAtLoad</key>
+  <true/>
+" /usr/bin/open -g -a Hammerspoon)
+  plain_args=0
+fi
+
 # --- load them (bootout first so re-running picks up changes) ---------------
-for p in "$cap_plist" "$upl_plist" "$rec_plist"; do
+for p in "$cap_plist" "$upl_plist" "$rec_plist" $hs_plist; do
   label=$(basename "$p" .plist)
   launchctl bootout "gui/$uid/$label" >/dev/null 2>&1
   if launchctl bootstrap "gui/$uid" "$p"; then
@@ -195,7 +219,10 @@ Installed. What to know:
  3. It starts when you LOG IN, not when the Mac boots. After a power cut or
     reboot nothing runs until you log in (FileVault turns auto-login off).
 
- 4. Stop everything instantly:   touch $MW_PAUSE
+ 4. Remote control: see web/README.md (a small dashboard to snap, record, pause and
+    change settings from your phone).
+
+ 5. Stop everything instantly:   touch $MW_PAUSE
     Resume:                       rm $MW_PAUSE
     Status:                       ./bin/status.sh
     Remove completely:            ./bin/uninstall.sh

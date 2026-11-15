@@ -11,7 +11,7 @@ mw_load_config
 AGENTS_DIR=${MW_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}
 uid=$(id -u)
 
-for a in capture upload record; do
+for a in capture upload record hammerspoon; do
   label=com.macwatch.$a
   launchctl bootout "gui/$uid/$label" >/dev/null 2>&1
   if [ -f "$AGENTS_DIR/$label.plist" ]; then
@@ -19,7 +19,7 @@ for a in capture upload record; do
     echo "removed $AGENTS_DIR/$label.plist"
   fi
 done
-rm -rf "$MW_STATE/record.lock" "$MW_STATE/upload.lock"
+rm -rf "$MW_STATE/record.lock" "$MW_STATE/upload.lock" "$MW_STATE/hammerspoon-enabled"
 echo "mac-watch agents stopped and removed. It will not start at login any more."
 
 if [ "${1:-}" = "--purge" ]; then

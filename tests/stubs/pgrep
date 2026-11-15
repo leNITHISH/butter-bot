@@ -1,0 +1,3 @@
+#!/bin/sh
+# Fake pgrep: "running" only if $STUB_DIR/hs_running exists.
+[ -e "$STUB_DIR/hs_running" ]

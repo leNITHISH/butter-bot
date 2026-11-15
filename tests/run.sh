@@ -52,6 +52,7 @@ old() { touch -t 202001010000 "$1"; }
 section() { printf '\n== %s\n' "$1"; _skip=0; case $1 in *"$FILTER"*) ;; *) _skip=1 ;; esac; [ "$_skip" = 0 ]; }
 
 ORIG_PATH=$PATH
+ORIG_HOME=$HOME
 
 # ============================================================================
 if section "gate: lid and PAUSE"; then
@@ -237,6 +238,136 @@ if section "batching"; then
   end_env
 fi
 
+if section "remote config"; then
+  new_env
+  mkdir -p "$D/control"
+  cat > "$D/control/config.remote" <<'CONF'
+# set from the web page
+INTERVAL_SEC=120
+JPEG_QUALITY=010
+KEEP_AWAKE=5
+RCLONE_REMOTE=evil
+SCREENCAPTURE_EXTRA=-m
+DRIVE_FOLDER=elsewhere
+RETENTION_DAYS=1
+MAX_WIDTH=$(touch /tmp/mw-injected)
+lower=5
+SPACE_MIN_GAP_SEC=15
+CONF
+  run upload.sh
+  eq "valid in-range numbers are applied (leading zeros stripped)" "INTERVAL_SEC=120 JPEG_QUALITY=10 SPACE_MIN_GAP_SEC=15" "$(tr '\n' ' ' < "$S/remote.conf" | sed 's/ $//')"
+  check "nothing outside the whitelist is applied (no RCLONE_REMOTE, no DRIVE_FOLDER, no flags)" test "$(grep -c 'RCLONE\|DRIVE\|SCREEN' "$S/remote.conf")" = 0
+  check "out-of-range values rejected (KEEP_AWAKE=5, RETENTION_DAYS=1)" test "$(grep -c 'KEEP_AWAKE\|RETENTION' "$S/remote.conf")" = 0
+  check "shell injection attempt did nothing" test ! -e /tmp/mw-injected
+  has "result is logged" "$L/upload.log" "applied=3 rejected="
+  run trigger.sh space
+  has "applied setting is really used (JPEG_QUALITY=10)" "$STUB_DIR/calls" "formatOptions 10 "
+  : > "$STUB_DIR/rclone_calls"; run upload.sh
+  hasnt "unchanged config.remote is not downloaded again" "$STUB_DIR/rclone_calls" " cat "
+  check "config.remote stays in Drive" test -f "$D/control/config.remote"
+  rm "$D/control/config.remote"; run upload.sh
+  check "removed from Drive: back to config.env" test ! -e "$S/remote.conf"
+  end_env
+  new_env
+  echo "INTERVAL_SEC=60" > "$S/../home/state/remote.conf" 2>/dev/null || { mkdir -p "$S"; echo "INTERVAL_SEC=60" > "$S/remote.conf"; }
+  mkdir -p "$S"; echo "INTERVAL_SEC=60" > "$S/remote.conf"
+  echo $(( $(date +%s) - 100 )) > "$S/last-trigger-interval"
+  run trigger.sh interval
+  eq "INTERVAL_SEC=60 from the web page: a shot 100 s after the last one" 1 "$(nshots)"
+  rm "$S/remote.conf"; echo $(( $(date +%s) - 100 )) > "$S/last-trigger-interval"
+  run trigger.sh interval
+  eq "INTERVAL_SEC=300 (config.env): 100 s is too soon" 1 "$(nshots)"
+  end_env
+fi
+
+if section "remote pause"; then
+  new_env
+  mkdir -p "$D/control/pause"
+  run upload.sh
+  check "pause marker: remote-paused state set" test -e "$S/remote-paused"
+  check "pause marker deleted" test ! -e "$D/control/pause"
+  run trigger.sh space
+  eq "paused remotely: nothing captured" 0 "$(nshots)"
+  has "paused remotely: reason logged" "$L/capture.log" "paused remotely"
+  STUB_REC_MAX=1 run record.sh 3
+  eq "paused remotely: no recording" 0 "$(nfiles "$Q/recordings")"
+  mkdir -p "$Q/shots/$TODAY"; echo x > "$Q/shots/$TODAY/20261113-100000-interval.jpg"
+  mkdir -p "$D/control/snap-now"
+  run upload.sh
+  eq "paused: snap-now is deleted but NOT acted on" 0 "$(find "$Q" "$D/shots" -name '*-remote.jpg' 2>/dev/null | wc -l | tr -d ' ')"
+  check "paused: snap-now marker consumed" test ! -e "$D/control/snap-now"
+  eq "paused: queued files are not uploaded" 1 "$(nshots)"
+  check "paused: status.json says so" grep -q '"paused": "remote"' "$D/control/status.json"
+  mkdir -p "$D/control/Resume"
+  run upload.sh
+  check "resume marker: pause lifted" test ! -e "$S/remote-paused"
+  eq "after resume: queue uploads again" 0 "$(nshots)"
+  run trigger.sh space
+  eq "after resume: capturing works" 1 "$(nshots)"
+  # the local PAUSE file is stronger: it stops even the Drive polling
+  touch "$MW_HOME/PAUSE"; mkdir -p "$D/control/pause"
+  run upload.sh
+  check "local PAUSE file: markers are not even read" test -e "$D/control/pause"
+  rm "$MW_HOME/PAUSE" "$S/remote-paused" 2>/dev/null
+  rm -rf "$D/control/pause"
+  # a late pause still works (safe direction)
+  mkdir -p "$D/control/pause"; old "$D/control/pause"
+  run upload.sh
+  check "old pause marker still pauses" test -e "$S/remote-paused"
+  end_env
+fi
+
+if section "status.json"; then
+  new_env
+  run trigger.sh space
+  printf '%s\n' '1 something "quoted" \ back\slash failed' > "$S/error-capture"
+  run upload.sh
+  python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+assert d["lid"]=="open" and d["paused"]=="no", d
+assert d["lastCapture"]["reason"]=="space" and d["lastCapture"]["result"]=="ok", d
+assert isinstance(d["updated"],int) and d["battery"]=="87%" and d["power"]=="AC", d
+assert "quoted" in d["errors"] and chr(34) not in d["errors"] and chr(92) not in d["errors"], d
+' "$D/control/status.json" && ok "status.json is valid JSON with the expected fields; quotes/backslashes cannot break it" || bad "status.json content"
+  hasnt "status.json has no screen content or secrets" "$D/control/status.json" "token"
+  : > "$STUB_DIR/rclone_calls"
+  cfg UPLOAD_EVERY_SEC=300; run upload.sh
+  hasnt "batched: status.json is not re-published within the window" "$STUB_DIR/rclone_calls" "copyto"
+  end_env
+fi
+
+if section "hammerspoon watchdog"; then
+  new_env
+  run upload.sh
+  hasnt "not enabled: Hammerspoon is left alone" "$STUB_DIR/calls" "open -g -a Hammerspoon"
+  : > "$S/hammerspoon-enabled"
+  run upload.sh
+  has "enabled and not running: it is started" "$STUB_DIR/calls" "open -g -a Hammerspoon"
+  : > "$STUB_DIR/calls"; : > "$STUB_DIR/hs_running"
+  run upload.sh
+  hasnt "enabled and running: nothing to do" "$STUB_DIR/calls" "open -g -a Hammerspoon"
+  run status.sh > "$T/s.txt"; has "status shows Hammerspoon running" "$T/s.txt" "hammerspoon .*running"
+  end_env
+  new_env
+  export STUB_DARWIN=1 MW_LAUNCH_AGENTS_DIR=$T/LaunchAgents HOME=$T/fakehome
+  mkdir -p "$HOME"
+  echo n | $SH "$ROOT/bin/install.sh" --hammerspoon > "$T/i.txt" 2>&1
+  check "--hammerspoon: login agent plist written" test -f "$T/LaunchAgents/com.macwatch.hammerspoon.plist"
+  check "--hammerspoon: watchdog flag set" test -e "$S/hammerspoon-enabled"
+  eq "hammerspoon agent opens the app at login" "/usr/bin/open -g -a Hammerspoon" "$(python3 -c '
+import plistlib,sys
+d=plistlib.load(open(sys.argv[1],"rb")); print(" ".join(d["ProgramArguments"]), d["RunAtLoad"] and "", end="")' "$T/LaunchAgents/com.macwatch.hammerspoon.plist" | sed 's/ *$//')"
+  check "declining the init.lua edit leaves ~/.hammerspoon alone" test ! -e "$HOME/.hammerspoon/init.lua"
+  run install.sh >/dev/null 2>&1
+  check "plain re-install keeps the agent (flag remembered)" test -f "$T/LaunchAgents/com.macwatch.hammerspoon.plist"
+  run install.sh --no-hammerspoon >/dev/null 2>&1
+  check "--no-hammerspoon removes agent and flag" test ! -e "$T/LaunchAgents/com.macwatch.hammerspoon.plist" -a ! -e "$S/hammerspoon-enabled"
+  unset STUB_DARWIN MW_LAUNCH_AGENTS_DIR
+  HOME=$ORIG_HOME; export HOME
+  end_env
+fi
+
 if section "rate limit backoff"; then
   new_env
   run trigger.sh space
@@ -370,7 +501,7 @@ if section "markers"; then
   mkdir -p "$D/control"; : > "$D/control/snap-now"; : > "$D/control/SNAP-NOW-again"
   run upload.sh
   eq "two snap markers in one poll: debounced to one shot" 1 "$(find "$D/shots" -name '*-remote.jpg' | wc -l | tr -d ' ')"
-  eq "both markers deleted" 0 "$(find "$D/control" -mindepth 1 | wc -l | tr -d ' ')"
+  eq "both markers deleted" 0 "$(find "$D/control" -mindepth 1 ! -name status.json | wc -l | tr -d ' ')"
   end_env
   new_env
   mkdir -p "$D/control/record-5min"
@@ -504,7 +635,7 @@ if section "install / uninstall"; then
 import plistlib,sys
 d=plistlib.load(open(sys.argv[1],"rb"))
 print(eval(sys.argv[2]))' "$T/LaunchAgents/com.macwatch.$1.plist" "$2"; }
-  eq "capture: valid plist, StartInterval from config" 420 "$(pl capture "d['StartInterval']")"
+  eq "capture: ticks every CONTROL_POLL_SEC (INTERVAL_SEC is checked in trigger.sh, so it is live-tunable)" 45 "$(pl capture "d['StartInterval']")"
   eq "capture: RunAtLoad" True "$(pl capture "d['RunAtLoad']")"
   eq "capture: runs trigger.sh interval via /bin/sh" "/bin/sh $ROOT/bin/trigger.sh interval" "$(pl capture "' '.join(d['ProgramArguments'])")"
   eq "upload: StartInterval from CONTROL_POLL_SEC" 45 "$(pl upload "d['StartInterval']")"
@@ -563,6 +694,16 @@ if command -v lua5.4 >/dev/null 2>&1 || command -v lua >/dev/null 2>&1; then
   fi
 fi
 
+if command -v node >/dev/null 2>&1; then
+  if section "web dashboard (node, fake Drive)"; then
+    if node "$ROOT/tests/web_test.js" > "${TMPDIR:-/tmp}/mw-web.out" 2>&1; then
+      ok "web dashboard: logic, Drive client and page wiring ($(grep -c '  ok' "${TMPDIR:-/tmp}/mw-web.out") checks)"
+    else
+      bad "web dashboard tests" "$(grep FAIL "${TMPDIR:-/tmp}/mw-web.out" | head -n 3; tail -n 3 "${TMPDIR:-/tmp}/mw-web.out")"
+    fi
+  fi
+fi
+
 # ============================================================================
 # Integration with the REAL rclone (local backend standing in for Drive), when installed.
 if [ -n "$REAL_RCLONE" ] && section "real rclone (local backend)"; then
@@ -583,7 +724,7 @@ if [ -n "$REAL_RCLONE" ] && section "real rclone (local backend)"; then
   PRUNE_EVERY_SEC=99999 SETTLE_SEC=16 run upload.sh   # (no prune yet: the aged mtime would count as old)
   eq "real rclone: both fresh markers fired (debounced to one shot) + space shot" 2 "$(find "$RD/shots" -name '*.jpg' | wc -l | tr -d ' ')"
   check "real rclone: remote shot exists" test "$(find "$RD/shots" -name '*-remote.jpg' | wc -l | tr -d ' ')" = 1
-  eq "real rclone: all marker names gone" 0 "$(find "$RD/control" -mindepth 1 | wc -l | tr -d ' ')"
+  eq "real rclone: all marker names gone (only status.json left)" 0 "$(find "$RD/control" -mindepth 1 ! -name status.json | wc -l | tr -d ' ')"
   hasnt "real rclone: stale record marker did not start a recording" "$STUB_DIR/calls" "kickstart"
   eq "real rclone: local queue empty" 0 "$(nfiles "$Q")"
   has "real rclone: stale marker logged as not acted on" "$L/upload.log" "record-5min"
@@ -592,6 +733,25 @@ if [ -n "$REAL_RCLONE" ] && section "real rclone (local backend)"; then
   check "real rclone: prune removes old files" test ! -f "$RD/shots/2020-01-01/o.jpg"
   check "real rclone: prune removes the empty date folder" test ! -d "$RD/shots/2020-01-01"
   hasnt "real rclone: no ERROR in upload.log" "$L/upload.log" "ERROR"
+  # archive-pull against the same fake "Drive"
+  mkdir -p "$RD/keep/2026-11-01" "$RD/shots/2026-11-02"
+  echo kept > "$RD/keep/2026-11-01/a.jpg"; echo shot > "$RD/shots/2026-11-02/b.jpg"
+  AR=$T/archive
+  run archive-pull.sh --dest "$AR" > "$T/ar.txt" 2>&1
+  check "archive-pull: keep/ copied" test -f "$AR/keep/2026-11-01/a.jpg"
+  check "archive-pull: shots NOT copied without --all" test ! -e "$AR/shots"
+  has "archive-pull: says it verified" "$T/ar.txt" "verified"
+  run archive-pull.sh --dest "$AR" --all > /dev/null 2>&1
+  check "archive-pull --all: shots copied" test -f "$AR/shots/2026-11-02/b.jpg"
+  check "archive-pull: Drive untouched without --free-drive" test -f "$RD/keep/2026-11-01/a.jpg" -a -f "$RD/shots/2026-11-02/b.jpg"
+  rm -f "$AR/keep/2026-11-01/a.jpg"
+  run archive-pull.sh --dest "$AR" --dry-run > /dev/null 2>&1
+  check "archive-pull --dry-run copies nothing" test ! -e "$AR/keep/2026-11-01/a.jpg"
+  echo no | $SH "$ROOT/bin/archive-pull.sh" --dest "$AR" --all --free-drive > /dev/null 2>&1
+  check "--free-drive: answering anything but 'delete' keeps Drive intact" test -f "$RD/keep/2026-11-01/a.jpg"
+  echo delete | $SH "$ROOT/bin/archive-pull.sh" --dest "$AR" --all --free-drive > /dev/null 2>&1
+  check "--free-drive + delete: verified files removed from Drive" test ! -e "$RD/keep/2026-11-01/a.jpg" -a ! -e "$RD/shots/2026-11-02/b.jpg"
+  check "--free-drive: the copies are still here" test -f "$AR/keep/2026-11-01/a.jpg" -a -f "$AR/shots/2026-11-02/b.jpg"
   end_env
 fi
 

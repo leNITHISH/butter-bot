@@ -50,6 +50,7 @@ case $cmd in
     done
     if [ "$dels" = 1 ]; then find "$src" -depth -mindepth 1 -type d -empty -exec rmdir {} \; 2>/dev/null; fi
     exit 0 ;;
+  cat) f=$(rmap "$p1"); [ -f "$f" ] || exit 3; cat "$f" ;;
   copyto) mkdir -p "$(dirname "$(rmap "$p2")")"; cp "$p1" "$(rmap "$p2")" ;;
   lsf)
     d=$(rmap "$p1"); [ -d "$d" ] || exit 3

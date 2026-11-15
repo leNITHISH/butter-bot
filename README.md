@@ -83,8 +83,11 @@ mac-watch never prints, logs or commits the rclone config or token.
 | See what it is doing | `./bin/status.sh` |
 | Stop everything instantly | `touch ~/mac-watch/PAUSE` (nothing captures, records or uploads) |
 | Resume | `rm ~/mac-watch/PAUSE` |
-| Instant screenshot from my phone | In the Drive app, in `mac-watch/control/`, create an **empty folder** named `snap-now` |
-| 5-minute screen recording from my phone | Create an empty folder named `record-5min` |
+| Instant screenshot from my phone | Open the dashboard (below) and tap **Screenshot now**. Or, without it: in the Drive app, in `mac-watch/control/`, create an **empty folder** named `snap-now` |
+| 5-minute screen recording from my phone | Tap **Record 5 min**, or create an empty folder named `record-5min` |
+| Pause remotely / resume | Tap **Pause** / **Resume**, or create a folder named `pause` / `resume`. (Only the `PAUSE` file on the Mac stops Drive polling too, and only the Mac can lift it.) |
+| Keep something forever | Tap **Keep** on it in the dashboard (or move it into `mac-watch/keep/` in Drive). `keep/` is never pruned. |
+| Copy everything to my other laptop | `./bin/archive-pull.sh` there (see **Archive** below) |
 | Remove it | `./bin/uninstall.sh` (keeps your data; `--purge` also deletes local queue/logs) |
 
 **Markers.** Any file *or* folder in `control/` whose name starts with `snap-now` or
@@ -97,6 +100,30 @@ know it ran. A snapshot shows up in `shots/` within about a minute and a half.
 
 **Recording** is screen only: no audio, no camera. If the lid closes or `PAUSE` appears
 mid-recording it stops and keeps what it has.
+
+## Web dashboard (optional)
+
+A small static page, hosted free on Netlify, signed in with your Google account, that talks
+straight to your Drive: Mac status ("last seen 3 min ago, battery 71%"), command buttons, a
+gallery with **Keep**, and a settings form. No server, no secrets on the site. Setup: `web/README.md`.
+
+Settings changed there are stored in Drive `control/config.remote` and applied by the Mac within
+about a minute, but **only** a fixed list of numbers within fixed ranges (never paths, commands or
+flags). `./bin/status.sh` shows when settings from the page are active.
+
+## Archive
+
+Drive keeps shots for `RETENTION_DAYS` (14). To keep things longer: tap **Keep** (moves them into
+`keep/`, never pruned), then on your other laptop (needs rclone; log in once with
+`./bin/setup-oauth.sh`):
+
+```sh
+./bin/archive-pull.sh                    # copy keep/ to ~/mac-watch-archive
+./bin/archive-pull.sh --all --days 3     # also everything from the last 3 days
+./bin/archive-pull.sh --free-drive       # after a VERIFIED copy, delete from Drive (asks first)
+```
+
+Without `--free-drive` nothing is ever deleted from Drive.
 
 ## Settings (`config.env`)
 
@@ -132,7 +159,7 @@ Three LaunchAgents (they need your logged-in graphical session, so they are Agen
 
 | Agent | Runs | Job |
 |---|---|---|
-| `com.macwatch.capture` | at login and every `INTERVAL_SEC` | `trigger.sh interval` |
+| `com.macwatch.capture` | at login and every `CONTROL_POLL_SEC` | `trigger.sh interval`, which takes a shot only once `INTERVAL_SEC` has passed (so the interval can be changed live) |
 | `com.macwatch.upload` | at login, every `CONTROL_POLL_SEC`, and when the network config changes | markers, upload, prune |
 | `com.macwatch.record` | only when asked | `record.sh`, started by the upload job for `record-5min` |
 
@@ -159,7 +186,7 @@ Auth failures are loud: `ERROR` in `log/upload.log` and shown by `status.sh`, wi
 | Lid open/closed gate | `ioreg` | built |
 | Phone markers `snap-now`, `record-5min` | Drive `control/` poll | built |
 | Internet comes back | the upload job polls, plus `WatchPaths` on network config | built |
-| Spacebar, wake, lock, unlock | Hammerspoon (below) | built, optional |
+| Spacebar (3 s after you stop typing), wake, lock, unlock | Hammerspoon (below) | built, optional |
 | Charger unplugged | logged in `log/events.log` | built |
 | Heartbeat (battery, power, Wi-Fi, uptime) | one line per interval shot in `log/events.log` | built |
 | Screen unchanged | interval shot skipped by a hash of a 16x16 copy | built |
@@ -172,7 +199,9 @@ brew install --cask hammerspoon
 ```
 
 Open Hammerspoon, grant **Accessibility** and **Input Monitoring**, choose *Reload Config*.
-Hammerspoon starts at login by itself after that.
+`--hammerspoon` also installs a fourth LaunchAgent that opens Hammerspoon at every login, and
+while it is enabled mac-watch starts Hammerspoon again within a minute if it is not running.
+Undo with `./bin/install.sh --no-hammerspoon`.
 
 **This is not a keylogger.** The key listener (`hammerspoon/init.lua`, one short function)
 reads exactly one fact about a key press: its numeric key code, to ask "is this the

@@ -149,3 +149,19 @@ Decisions made without waiting for answers to the Open questions: `KEEP_AWAKE=0`
 Deviation from the plan: a third on-demand LaunchAgent, `com.macwatch.record`, runs recordings (a 5-minute
 recording cannot live inside the 60 s poll job, and background jobs started by a script cannot be stopped
 cleanly with SIGINT).
+
+## Later additions (after the first Mac tests)
+
+- Own Google OAuth client (`bin/setup-oauth.sh`) after rclone's shared client hit `rateLimitExceeded`.
+  Upload batching (`UPLOAD_EVERY_SEC=300`), 5-minute backoff on rate limits.
+- Spacebar shot is taken 3 s after typing stops (`SPACE_MIN_GAP_SEC=30`).
+- **Deviation:** `com.macwatch.capture` now ticks every `CONTROL_POLL_SEC`; `trigger.sh interval` applies
+  `INTERVAL_SEC` itself, so the interval can be changed remotely without reinstalling.
+- Remote control: markers `pause` / `resume`; Drive `control/config.remote` (numbers only, whitelist and
+  ranges in `bin/lib.sh` `remote_bounds`, mirrored in `web/logic.js`, checked by tests); `control/status.json`
+  written by `bin/report.sh`.
+- `web/` + `netlify.toml`: static dashboard (Google sign-in, Drive as the backend; no server, no secrets).
+- `keep/` folder in Drive is never pruned; `bin/archive-pull.sh` copies to another computer (verifies before
+  any optional delete).
+- Hammerspoon: fourth LaunchAgent opens it at login and the upload job restarts it if it dies
+  (`state/hammerspoon-enabled`).

@@ -55,8 +55,15 @@ case $csec in
 esac
 
 if ! rclone listremotes 2>/dev/null | grep -qx "$RCLONE_REMOTE:"; then
-  echo "No remote '$RCLONE_REMOTE' yet. Run ./bin/setup-drive.sh first."
-  exit 1
+  # e.g. your archive laptop: create the remote with your own client right away
+  echo "No remote '$RCLONE_REMOTE' on this computer yet: creating it (your browser opens to log in)."
+  rclone config create "$RCLONE_REMOTE" drive scope=drive client_id="$cid" client_secret="$csec" >/dev/null \
+    || { echo "Could not create the remote."; exit 1; }
+  cfg=$(rclone config file 2>/dev/null | tail -n 1)
+  [ -f "$cfg" ] && chmod 600 "$cfg"
+  cid=; csec=
+  rclone lsd "$RCLONE_REMOTE:" --max-depth 0 >/dev/null 2>&1 && echo "Drive login works with your own client." || { echo "Created, but cannot reach Drive yet; try: rclone config reconnect $RCLONE_REMOTE:"; exit 1; }
+  exit 0
 fi
 
 rclone config update "$RCLONE_REMOTE" client_id="$cid" client_secret="$csec" scope=drive >/dev/null || { echo "Could not update the rclone config."; exit 1; }

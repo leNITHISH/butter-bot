@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>mac-watch</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>mac-watch</h1>
+  <button id="signout" class="ghost" hidden>Sign out</button>
+</header>
+
+<main>
+  <section id="signin" class="card">
+    <h2>Sign in</h2>
+    <p>This page has no password of its own. It talks straight to <strong>your</strong> Google Drive
+       and only works after you sign in with your Google account. Nothing is stored on this site.</p>
+    <p id="setup-msg" class="warn" hidden></p>
+    <button id="signin-btn" class="primary">Sign in with Google</button>
+    <p class="small">Google may say the app is unverified: that is your own app. Choose
+       Advanced, then continue.</p>
+  </section>
+
+  <div id="app" hidden>
+    <section class="card" id="status-card">
+      <h2>Your Mac <span id="health-dot" class="dot" aria-hidden="true"></span></h2>
+      <p id="health-text" class="big">Loading...</p>
+      <dl id="status-list"></dl>
+      <p id="status-errors" class="warn" hidden></p>
+      <button id="status-refresh" class="ghost">Refresh</button>
+    </section>
+
+    <section class="card">
+      <h2>Commands</h2>
+      <div class="row">
+        <button id="cmd-snap" class="primary">Screenshot now</button>
+        <button id="cmd-record">Record 5 min</button>
+        <button id="cmd-pause">Pause</button>
+        <button id="cmd-resume">Resume</button>
+      </div>
+      <p id="cmd-note" class="small">The Mac checks for commands about once a minute while it is awake,
+        the lid is open and it is online. A screenshot usually shows up in 1 to 2 minutes.</p>
+    </section>
+
+    <section class="card">
+      <h2>Screenshots</h2>
+      <label class="small" for="day-select">Day</label>
+      <select id="day-select"></select>
+      <div id="grid" class="grid"></div>
+      <p id="grid-empty" class="small" hidden>No screenshots for this day.</p>
+      <button id="grid-more" class="ghost" hidden>Show more</button>
+    </section>
+
+    <section class="card">
+      <h2>Recordings</h2>
+      <ul id="rec-list" class="list"></ul>
+      <p id="rec-empty" class="small" hidden>No recordings yet.</p>
+      <div id="rec-player"></div>
+    </section>
+
+    <section class="card">
+      <h2>Settings</h2>
+      <p class="small">Leave a box empty to use the Mac's own setting (<code>config.env</code>). Changes
+        reach the Mac within about a minute. Only these numbers can be changed from here.</p>
+      <form id="settings-form"></form>
+      <p id="settings-errors" class="warn" hidden></p>
+      <div class="row">
+        <button id="settings-save" class="primary">Save to Mac</button>
+        <button id="settings-reset">Use the Mac's own settings</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Keep and archive</h2>
+      <p class="small">Tap <strong>Keep</strong> on a screenshot or recording to move it into
+        <code>keep/</code> in Drive. Files there are never deleted automatically. Later, on your other
+        laptop: <code>./bin/archive-pull.sh</code> copies them across.</p>
+    </section>
+  </div>
+</main>
+
+<dialog id="viewer">
+  <div id="viewer-body"></div>
+  <p id="viewer-meta" class="small"></p>
+  <div class="row">
+    <button id="viewer-keep" class="primary">Keep</button>
+    <a id="viewer-download" class="button" download>Download</a>
+    <button id="viewer-close" class="ghost">Close</button>
+  </div>
+</dialog>
+
+<div id="toast" role="status" aria-live="polite" hidden></div>
+
+<script src="config.js"></script>
+<script src="logic.js"></script>
+<script src="drive.js"></script>
+<script src="app.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+</body>
+</html>

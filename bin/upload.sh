@@ -1,16 +1,20 @@
 #!/bin/sh
 # upload.sh - runs every CONTROL_POLL_SEC (and when the network config changes).
-#   1. gate (lid open, no PAUSE); optional KEEP_AWAKE
+#   1. gate (lid open, no local PAUSE); optional KEEP_AWAKE; keep Hammerspoon alive
 #   2. housekeeping: queue cap, old temp files          (also works while offline)
 #   3. online check; exit quietly when offline
-#   4. Drive control/ markers: snap-now, record-5min
-#   5. flush queue/ to Drive (rclone move), prune Drive older than RETENTION_DAYS
+#   4. Drive control/: markers (snap-now, record-5min, pause, resume) and config.remote
+#   5. flush queue/ to Drive (rclone move), prune Drive older than RETENTION_DAYS,
+#      publish status.json for the web dashboard
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
 mw_init upload
 
-gate quiet || exit 0
+# The local PAUSE file stops everything. A remote pause (marker) keeps us polling
+# Drive so that `resume` can reach us, but nothing is captured or uploaded.
+paused_local && exit 0
+lid_open || exit 0
 
 # ------------------------------------------------------------ keep awake ----
 # Optional (KEEP_AWAKE=1). Each poll starts a short caffeinate that expires on
@@ -21,9 +25,15 @@ keepawake_tick() {
   command -v caffeinate >/dev/null 2>&1 || return 0
   caffeinate -di -t $((CONTROL_POLL_SEC * 3)) >/dev/null 2>&1 &
 }
-keepawake_tick
+paused_remote || keepawake_tick
 
 "$MW_BIN/heartbeat.sh" power
+
+# Phase 3 helper: keep Hammerspoon running (only if install.sh --hammerspoon enabled it).
+if [ -e "$MW_STATE/hammerspoon-enabled" ] && ! pgrep -x Hammerspoon >/dev/null 2>&1; then
+  log WARN "Hammerspoon is not running; starting it"
+  open -g -a Hammerspoon >/dev/null 2>&1
+fi
 
 if ! lock_acquire upload 10; then
   debug "upload: previous run still going"
@@ -117,6 +127,7 @@ report_rclone_error() { # CONTEXT EXITCODE   (stderr of the failed call is in $e
 # snap-now or record-5min (any case). Delete first, act only if the delete worked.
 
 want_settle=0
+status_dirty=0
 
 handle_markers() {
   _ctl=$(rpath control)
@@ -131,6 +142,7 @@ handle_markers() {
     return 0
   fi
   _now_w=$(wall_to_secs "$(local_wall_now)")
+  _saw_conf=0
 
   while IFS= read -r _line <&3; do
     [ -n "$_line" ] || continue
@@ -142,6 +154,12 @@ handle_markers() {
     case $_lc in
       snap-now*)    _kind=snap ;;
       record-5min*) _kind=record ;;
+      pause*)       _kind=pause ;;
+      resume*)      _kind=resume ;;
+      config.remote)
+        _saw_conf=1
+        [ "$_isdir" = 0 ] && apply_remote_file "$_ctl" "$_t"
+        continue ;;
       *)            continue ;;
     esac
 
@@ -165,11 +183,30 @@ handle_markers() {
       continue
     fi
 
-    if [ "$_age" -gt $((MARKER_MAX_AGE_MIN * 60)) ]; then
+    # pause/resume are safe to act on late (a late pause is the safe direction), so they have no age limit
+    if [ "$_kind" != pause ] && [ "$_kind" != resume ] && [ "$_age" -gt $((MARKER_MAX_AGE_MIN * 60)) ]; then
       log INFO "marker '$_p' is $(age_str "$_age") old (limit ${MARKER_MAX_AGE_MIN}m): deleted, not acted on"
       continue
     fi
 
+    case $_kind in
+      pause)
+        log INFO "marker '$_p': paused remotely (send a 'resume' marker to continue)"
+        date +%s > "$MW_STATE/remote-paused"
+        status_dirty=1
+        ;;
+      resume)
+        log INFO "marker '$_p': resumed"
+        rm -f "$MW_STATE/remote-paused"
+        status_dirty=1
+        ;;
+      snap|record)
+        if paused_remote; then
+          log INFO "marker '$_p': ignored because capturing is paused remotely"
+          continue
+        fi
+        ;;
+    esac
     case $_kind in
       snap)
         log INFO "marker '$_p': taking a screenshot"
@@ -182,6 +219,29 @@ handle_markers() {
         ;;
     esac
   done 3< "$list"   # fd 3: nothing inside the loop can eat our input
+
+  # config.remote removed from Drive: go back to the settings in config.env
+  if [ "$_saw_conf" = 0 ] && [ -e "$MW_STATE/remote.conf" ]; then
+    log INFO "config.remote is gone from Drive: back to config.env settings"
+    rm -f "$MW_STATE/remote.conf" "$MW_STATE/remote-conf-time"
+    mw_load_config
+    status_dirty=1
+  fi
+}
+
+# Download and apply Drive control/config.remote, but only when its time changed.
+apply_remote_file() { # CONTROL-PATH TIME-STRING
+  [ "$2" != "$(cat "$MW_STATE/remote-conf-time" 2>/dev/null)" ] || return 0
+  if rc cat "$1/config.remote" > "$MW_TMP/remote.raw.$$" 2> "$errf"; then
+    _res=$(apply_remote_config "$MW_TMP/remote.raw.$$" "$MW_STATE/remote.conf")
+    printf '%s' "$2" > "$MW_STATE/remote-conf-time"
+    log INFO "config.remote changed: $_res"
+    mw_load_config
+    status_dirty=1
+  else
+    report_rclone_error "reading config.remote" $?
+  fi
+  rm -f "$MW_TMP/remote.raw.$$"
 }
 
 # Recordings run as their own on-demand LaunchAgent so they outlive this job
@@ -199,6 +259,30 @@ start_recording() { # MARKER-NAME
 }
 
 handle_markers
+
+# ------------------------------------------------------------ status.json ---
+# The web dashboard reads Drive control/status.json. Pushed on the batch cadence,
+# and immediately after a pause/resume/config change.
+push_status() { # force(0/1)
+  backing_off && return 0
+  if [ "$1" != 1 ]; then
+    _last=$(cat "$MW_STATE/last-status-push" 2>/dev/null)
+    case $_last in ''|*[!0-9]*) _last=0 ;; esac
+    [ $(($(now) - _last)) -ge "$UPLOAD_EVERY_SEC" ] || return 0
+  fi
+  "$MW_BIN/report.sh" || return 0
+  if rc copyto "$MW_STATE/status.json" "$(rpath control)/status.json" 2> "$errf"; then
+    now > "$MW_STATE/last-status-push"
+  else
+    report_rclone_error "publishing status.json" $?
+  fi
+}
+
+if paused_remote; then
+  push_status "$status_dirty"
+  [ "$run_errors" = 0 ] && clear_error upload
+  exit 0
+fi
 
 # ------------------------------------------------------------------ flush ---
 
@@ -266,6 +350,8 @@ prune_drive() {
   log INFO "prune: removed Drive files older than ${RETENTION_DAYS}d"
 }
 prune_drive
+
+push_status "$((status_dirty || want_settle || force_flush))"
 
 # A run with no rclone errors at all means Drive is healthy again.
 [ "$run_errors" = 0 ] && clear_error upload

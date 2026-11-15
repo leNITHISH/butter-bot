@@ -73,6 +73,12 @@ mw_load_config() {
     # shellcheck source=/dev/null
     . "$MW_HOME/config.env"
   fi
+  # Settings changed from the web page: written only by apply_remote_config
+  # (strictly validated KEY=number lines), so sourcing it is safe.
+  if [ -r "$MW_STATE/remote.conf" ]; then
+    # shellcheck source=/dev/null
+    . "$MW_STATE/remote.conf"
+  fi
   _int_or INTERVAL_SEC 300
   _int_or MAX_WIDTH 1440
   _int_or JPEG_QUALITY 60
@@ -176,7 +182,13 @@ age_str() { # SECONDS -> 45s / 12m / 3h / 2d
 
 # ---------------------------------------------------------------- the gate --
 
-paused() { [ -e "$MW_PAUSE" ]; }
+# Two kinds of pause. PAUSE (a file you create on the Mac) stops EVERYTHING,
+# including talking to Drive. A remote pause (set from the phone/web page with a
+# `pause` marker, lifted with `resume`) stops capture, recording and uploads but
+# keeps polling Drive so that `resume` can reach us.
+paused_local() { [ -e "$MW_PAUSE" ]; }
+paused_remote() { [ -e "$MW_STATE/remote-paused" ]; }
+paused() { paused_local || paused_remote; }
 
 # Prints open | closed | unknown.
 lid_state() {
@@ -204,8 +216,12 @@ lid_open() {
 
 # THE gate. Everything that captures, records or uploads goes through here.
 gate() { # [quiet]
-  if paused; then
+  if paused_local; then
     [ "${1:-}" = quiet ] || log INFO "skip: PAUSE file present"
+    return 1
+  fi
+  if paused_remote; then
+    [ "${1:-}" = quiet ] || log INFO "skip: paused remotely (send a resume marker)"
     return 1
   fi
   if ! lid_open; then
@@ -213,6 +229,53 @@ gate() { # [quiet]
     return 1
   fi
   return 0
+}
+
+# ------------------------------------------------------- remote settings -----
+# Which settings may be changed from the web page, and the allowed range.
+# Anything else (Drive folder, rclone remote, extra screencapture flags, queue
+# caps, poll interval) can only be changed in config.env on the Mac. There is
+# deliberately no way to put text into a setting: numbers only.
+# NOTE: web/logic.js has the same table; tests/run.sh checks they match.
+remote_bounds() { # KEY -> "min max"
+  case $1 in
+    INTERVAL_SEC)        echo "30 86400" ;;
+    MAX_WIDTH)           echo "320 4000" ;;
+    JPEG_QUALITY)        echo "10 100" ;;
+    SKIP_IDENTICAL)      echo "0 1" ;;
+    SKIP_MAX_AGE_SEC)    echo "60 86400" ;;
+    RETENTION_DAYS)      echo "3 365" ;;
+    KEEP_AWAKE)          echo "0 1" ;;
+    RECORD_SEC)          echo "10 1800" ;;
+    SPACE_MIN_GAP_SEC)   echo "5 3600" ;;
+    EVENT_MIN_GAP_SEC)   echo "5 3600" ;;
+    UPLOAD_EVERY_SEC)    echo "0 3600" ;;
+    MARKER_MAX_AGE_MIN)  echo "1 1440" ;;
+  esac
+}
+remote_keys() { echo "INTERVAL_SEC MAX_WIDTH JPEG_QUALITY SKIP_IDENTICAL SKIP_MAX_AGE_SEC RETENTION_DAYS KEEP_AWAKE RECORD_SEC SPACE_MIN_GAP_SEC EVENT_MIN_GAP_SEC UPLOAD_EVERY_SEC MARKER_MAX_AGE_MIN"; }
+
+# apply_remote_config SRC DST: keep only valid, in-range whitelisted KEY=number
+# lines. Prints "applied=N rejected=M".
+apply_remote_config() {
+  _n=0; _bad=0
+  : > "$2.new"
+  while IFS= read -r _l || [ -n "$_l" ]; do
+    _l=$(printf '%s' "$_l" | tr -d '\r')
+    case $_l in ''|'#'*) continue ;; esac
+    _k=${_l%%=*}; _v=${_l#*=}
+    case $_k in ''|*[!A-Z_]*) _bad=$((_bad + 1)); continue ;; esac
+    case $_v in ''|*[!0-9]*) _bad=$((_bad + 1)); continue ;; esac
+    _v=$(printf '%s' "$_v" | sed 's/^0*\([0-9]\)/\1/')     # no leading zeros (octal trap)
+    _b=$(remote_bounds "$_k")
+    if [ -z "$_b" ] || [ "${#_v}" -gt 7 ] || [ "$_v" -lt "${_b% *}" ] || [ "$_v" -gt "${_b#* }" ]; then
+      _bad=$((_bad + 1)); continue
+    fi
+    printf '%s=%s\n' "$_k" "$_v" >> "$2.new"
+    _n=$((_n + 1))
+  done < "$1"
+  mv "$2.new" "$2"
+  echo "applied=$_n rejected=$_bad"
 }
 
 # ---------------------------------------------------------------- locks -----
@@ -267,7 +330,7 @@ file_size() { wc -c < "$1" 2>/dev/null | tr -d ' '; }
 min_gap_for() {
   case $1 in
     space)                    echo "$SPACE_MIN_GAP_SEC" ;;
-    interval)                 echo $((INTERVAL_SEC / 2)) ;;
+    interval)                 echo $((INTERVAL_SEC - 10)) ;;   # the agent ticks every CONTROL_POLL_SEC
     remote)                   echo 20 ;;
     wake|lock|unlock|login)   echo "$EVENT_MIN_GAP_SEC" ;;
     *)                        echo 0 ;;

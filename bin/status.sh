@@ -15,15 +15,24 @@ line() { printf '  %-14s %s\n' "$1" "$2"; }
 echo "mac-watch status  ($(date '+%Y-%m-%d %H:%M:%S'))"
 echo
 
-if paused; then
+if paused_local; then
   line "state" "PAUSED  (PAUSE file exists; nothing captures, records or uploads. Remove it with: rm $MW_PAUSE)"
+elif paused_remote; then
+  line "state" "PAUSED REMOTELY  (from the web page/phone; create a 'resume' folder in Drive control/, or: rm $MW_STATE/remote-paused)"
 else
   line "state" "active"
+fi
+if [ -s "$MW_STATE/remote.conf" ]; then
+  line "remote cfg" "$(grep -c . "$MW_STATE/remote.conf") setting(s) from the web page override config.env: $(tr '\n' ' ' < "$MW_STATE/remote.conf")"
+fi
+if [ -e "$MW_STATE/hammerspoon-enabled" ]; then
+  if pgrep -x Hammerspoon >/dev/null 2>&1; then line "hammerspoon" "running"; else line "hammerspoon" "NOT running (mac-watch will start it within a minute)"; fi
 fi
 line "lid" "$(lid_state)"
 
 if command -v launchctl >/dev/null 2>&1 && [ "$(uname -s)" = Darwin ]; then
-  for a in capture upload record; do
+  for a in capture upload record hammerspoon; do
+    [ "$a" = hammerspoon ] && [ ! -e "$MW_STATE/hammerspoon-enabled" ] && continue
     if launchctl list 2>/dev/null | grep -q "com.macwatch.$a\$"; then
       line "agent $a" "loaded"
     else
