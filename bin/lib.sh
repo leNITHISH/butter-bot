@@ -49,6 +49,7 @@ mw_defaults() {
   RECORD_SEC=300
   RECORD_PRESET=Preset1280x720
   SPACE_MIN_GAP_SEC=30
+  ENTER_MIN_GAP_SEC=0
   EVENT_MIN_GAP_SEC=30
   # Internal knobs (not in config.env; the tests override them via the environment)
   UPLOAD_EVERY_SEC=${UPLOAD_EVERY_SEC:-300}
@@ -96,6 +97,7 @@ mw_load_config() {
   _int_or MARKER_MAX_AGE_MIN 30
   _int_or RECORD_SEC 300
   _int_or SPACE_MIN_GAP_SEC 30
+  _int_or ENTER_MIN_GAP_SEC 0
   _int_or EVENT_MIN_GAP_SEC 30
   _int_or UPLOAD_EVERY_SEC 120
   _int_or PRUNE_EVERY_SEC 3600
@@ -337,6 +339,7 @@ file_size() { wc -c < "$1" 2>/dev/null | tr -d ' '; }
 min_gap_for() {
   case $1 in
     space)                    echo "$SPACE_MIN_GAP_SEC" ;;
+    enter)                    echo "$ENTER_MIN_GAP_SEC" ;;   # 0: Hammerspoon already keeps 0.5 s between presses
     interval)                 echo $((INTERVAL_SEC - 10)) ;;   # the agent ticks every CONTROL_POLL_SEC
     remote)                   echo 5 ;;
     wake|lock|unlock|login)   echo "$EVENT_MIN_GAP_SEC" ;;

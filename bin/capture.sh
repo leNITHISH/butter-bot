@@ -76,16 +76,25 @@ while [ -e "$MW_QUEUE/shots/$day/$name" ]; do
   n=$((n + 1))
   name=$ts-$reason-$n.jpg
 done
-# thumbnail first (best effort), so the shot never arrives without one
-if sips --resampleWidth 320 -s format jpeg -s formatOptions 50 "$fin" --out "$thumb" >/dev/null 2>&1 && [ -s "$thumb" ]; then
+# thumbnail first (best effort), from the private tmp copy
+sips --resampleWidth 320 -s format jpeg -s formatOptions 50 "$fin" --out "$thumb" >/dev/null 2>&1
+# `ln` creates the name atomically and fails if it exists, so two captures finishing in
+# the same second (Enter shots can be 0.5 s apart) never overwrite each other.
+while ! ln "$fin" "$MW_QUEUE/shots/$day/$name" 2>/dev/null; do
+  if [ ! -d "$MW_QUEUE/shots/$day" ] || [ "$n" -gt 50 ]; then
+    note_error capture "could not move $name into the queue"
+    exit 1
+  fi
+  n=$((n + 1))
+  name=$ts-$reason-$n.jpg
+done
+rm -f "$fin"
+# the thumbnail goes under the shot's final name
+if [ -s "$thumb" ]; then
   mkdir -p "$MW_QUEUE/thumbs/$day"
   mv "$thumb" "$MW_QUEUE/thumbs/$day/$name"
 else
   debug "no thumbnail for $name"
-fi
-if ! mv "$fin" "$MW_QUEUE/shots/$day/$name"; then
-  note_error capture "could not move $name into the queue"
-  exit 1
 fi
 now > "$MW_STATE/last-keep"
 [ -n "$h" ] && echo "$h" > "$MW_STATE/last-hash"

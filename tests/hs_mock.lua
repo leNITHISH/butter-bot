@@ -16,7 +16,7 @@ local function key_event(code, rep)
 end
 
 hs = {
-  keycodes = { map = { space = 49 } },
+  keycodes = { map = { space = 49, ["return"] = 36, padenter = 76 } },
   eventtap = { event = { types = { keyDown = "keyDown" }, properties = { keyboardEventAutorepeat = "autorepeat-prop" } },
     new = function(types, fn)
       assert(#types == 1 and types[1] == "keyDown", "must listen to keyDown only")
@@ -76,6 +76,22 @@ check(tasks[1][1]:match("/bin/trigger%.sh$") ~= nil, "runs bin/trigger.sh")
 now = now + 10; tap.fn(key_event(49, 0))
 for _ = 1, 11 do now = now + 3; tap.fn(key_event(49, 0)) end
 check(#tasks == 2 and tasks[2][2] == "space", "typing for 30 s without a pause still gives a shot")
+
+-- Enter: immediate, at most one per 0.5 s, keypad Enter too, auto-repeat ignored
+local before = #tasks
+local function enters() local n = 0; for i = before + 1, #tasks do if tasks[i][2] == "enter" then n = n + 1 end end; return n end
+now = now + 100
+check(tap.fn(key_event(36, 0)) == false, "Enter is never swallowed")
+check(enters() == 1, "Return: a shot at once (no settle delay)")
+now = now + 0.3; tap.fn(key_event(36, 0))
+check(enters() == 1, "a second Return within 0.5 s is ignored")
+now = now + 0.25; tap.fn(key_event(36, 0))
+check(enters() == 2, "Return 0.55 s after the last shot: another shot")
+now = now + 0.6; tap.fn(key_event(76, 0))
+check(enters() == 3, "keypad Enter works too")
+now = now + 0.6; tap.fn(key_event(36, 1))
+check(enters() == 3, "Enter auto-repeat ignored")
+check(not settle.running or settle.starts == settle.starts, "Enter does not touch the spacebar timer")
 
 local w = watchers[1]
 w.fn(1)

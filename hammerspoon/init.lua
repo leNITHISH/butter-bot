@@ -8,13 +8,16 @@
 --   * spacebar pressed        -> bin/trigger.sh space, taken SPACE_SETTLE_SEC after the
 --                                last space of a typing burst, so the shot shows what you
 --                                just typed (trigger.sh still applies SPACE_MIN_GAP_SEC)
+--   * Return / keypad Enter   -> bin/trigger.sh enter, IMMEDIATELY on every press; presses
+--                                closer than ENTER_MIN_GAP_SEC (0.5 s) to the last one are
+--                                ignored (the shell has whole seconds only, so this guard lives here)
 --   * wake from sleep         -> bin/trigger.sh wake
 --   * screen locked/unlocked  -> bin/trigger.sh lock / unlock
 -- Every trigger goes through bin/trigger.sh, which checks the lid and the PAUSE file.
 --
 -- PRIVACY: THIS IS NOT A KEYLOGGER.
 --   The key listener reads exactly one fact about a key press: its numeric key
---   code, to ask "is it the spacebar?". Nothing else is read from the event: not
+--   code, to ask "is it the spacebar or Enter?". Nothing else is read from the event: not
 --   the character, not the modifiers, not the app. Nothing is stored in a
 --   variable, written to a file or log, or sent anywhere, for any key. The
 --   listener always returns false, so every key press goes on to the app
@@ -78,17 +81,40 @@ local function spacePressed()
   end
 end
 
+-- ------------------------------------------------------------------- Enter --
+
+-- Return and the keypad's Enter. Compared by key code only, like the spacebar.
+local ENTER_KEYCODES = {}
+ENTER_KEYCODES[hs.keycodes.map["return"]] = true
+if hs.keycodes.map["padenter"] then ENTER_KEYCODES[hs.keycodes.map["padenter"]] = true end
+local ENTER_MIN_GAP_SEC = 0.5  -- at most one Enter shot per half second
+local lastEnter = nil          -- WHEN the last Enter shot was taken (a timestamp, not a key)
+
+local function enterPressed()
+  local now = hs.timer.secondsSinceEpoch()
+  if lastEnter ~= nil and now - lastEnter < ENTER_MIN_GAP_SEC then
+    return
+  end
+  lastEnter = now
+  fire("enter")
+end
+
 -- The ONLY place a key press is looked at. It compares the key code with the
--- spacebar's and ignores auto-repeat. It returns false in every case so the key
--- is never swallowed.
+-- spacebar's and Enter's and ignores auto-repeat. It returns false in every case
+-- so the key is never swallowed.
 local function onKeyDown(event)
-  if event:getKeyCode() ~= SPACE_KEYCODE then
+  local code = event:getKeyCode()
+  if code ~= SPACE_KEYCODE and not ENTER_KEYCODES[code] then
     return false
   end
   if event:getProperty(hs.eventtap.event.properties.keyboardEventAutorepeat) ~= 0 then
     return false
   end
-  spacePressed()
+  if code == SPACE_KEYCODE then
+    spacePressed()
+  else
+    enterPressed()
+  end
   return false
 end
 

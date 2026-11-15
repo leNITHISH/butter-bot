@@ -146,6 +146,21 @@ if section "debounce"; then
   end_env
 fi
 
+if section "enter: every press"; then
+  new_env
+  run trigger.sh enter; run trigger.sh enter; run trigger.sh enter
+  eq "three Enter triggers in the same second: three shots (no cooldown)" 3 "$(nshots)"
+  eq "...with three different names" 3 "$(find "$Q/shots" -name '*-enter*.jpg' | sed 's|.*/||' | sort -u | wc -l | tr -d ' ')"
+  eq "...and three thumbnails" 3 "$(nfiles "$Q/thumbs")"
+  rm -rf "$Q"
+  for _ in 1 2 3 4 5 6; do run trigger.sh enter & done; wait
+  eq "six Enter shots at the same moment: none lost or overwritten" 6 "$(nshots)"
+  cfg ENTER_MIN_GAP_SEC=60; rm -rf "$Q"
+  run trigger.sh enter; run trigger.sh enter
+  eq "ENTER_MIN_GAP_SEC still works if you want a cooldown" 1 "$(nshots)"
+  end_env
+fi
+
 if section "skip identical frames"; then
   new_env
   cfg SKIP_IDENTICAL=1

@@ -207,6 +207,7 @@ with the fix (`./bin/setup-remote.sh`, or `./worker/put-secrets.sh MAC_TOKEN_HAS
 | Screenshot now, Record, Live, Pause/Resume | web page -> Worker -> `listen.sh` poll (2 s while the page is open) | built |
 | Internet comes back | the upload job polls, plus `WatchPaths` on network config | built |
 | Spacebar (3 s after you stop typing), wake, lock, unlock | Hammerspoon (below) | built, optional |
+| Return / keypad Enter: a shot on **every** press, at once (presses under 0.5 s apart count once) | Hammerspoon (below) | built, optional |
 | Charger unplugged | logged in `log/events.log` | built |
 | Heartbeat (battery, power, Wi-Fi, uptime) | one line per interval shot in `log/events.log` | built |
 | Screen unchanged | interval shot skipped by a hash of a 16x16 copy | built |
@@ -225,7 +226,7 @@ Undo with `./bin/install.sh --no-hammerspoon`.
 
 **This is not a keylogger.** The key listener (`hammerspoon/init.lua`, one short function)
 reads exactly one fact about a key press: its numeric key code, to ask "is this the
-spacebar?". It does not read the character, modifiers or app, stores nothing, writes no log
+spacebar or Enter?". It does not read the character, modifiers or app, stores nothing, writes no log
 and sends nothing, and it never swallows a key. `tests/hs_mock.lua` enforces this: the fake key
 event raises an error if the listener asks for anything else.
 
