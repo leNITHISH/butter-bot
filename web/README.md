@@ -32,6 +32,12 @@ Address: **https://butter-bot.butter-bot-worker.workers.dev**
   `RETENTION_DAYS` and the **storage guard** (above `STORAGE_SOFT_LIMIT_GB`, default 8 GB, the
   oldest non-Keep days go first). `keep/` is only ever deleted when you delete a kept file by hand.
 
+Look: the owner's **blafortree** design system (a Claude Design System artifact): cream paper,
+ink, orange marks, square corners, lines instead of cards, uppercase mono captions, words instead
+of icons, light only. Fonts: Atkinson Hyperlegible Next and Mono, self-hosted in `web/fonts/`
+(OFL, licences beside them) because the CSP allows fonts from this site only. Screenshot reasons
+wear the system's accent colours.
+
 Code: `worker/core.js` (all logic, tested in node), `worker/b2.js` (B2 native API),
 `worker/index.js` (Cloudflare glue), `worker/schema.sql`, `worker/wrangler.toml`. Page:
 `index.html`, `app.js`, `api.js`, `logic.js` (shared with the Worker), `style.css`.

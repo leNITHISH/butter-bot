@@ -14,6 +14,25 @@
     return e;
   }
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
+  function pad2(n) { return (n < 10 ? "0" : "") + n; }
+  // a Tag in the reason's accent (interval, space, enter, remote, wake, lock...)
+  function reasonTag(reason) {
+    var safe = /^[a-z0-9-]+$/.test(reason || "") ? reason : "other";
+    return el("span", "tag r-" + safe, safe);
+  }
+  // decorative barcode generated from a name (the design system's Barcode)
+  function barcode(node, text) {
+    clear(node);
+    for (var i = 0; i < text.length; i++) {
+      var c = text.charCodeAt(i);
+      [c & 3, (c >> 2) & 3, (c >> 4) & 3].forEach(function (w, j) {
+        var bar = el("i");
+        bar.style.width = (w + 1) + "px";
+        bar.style.marginRight = ((c >> j) & 1 ? 2 : 3) + "px";
+        node.appendChild(bar);
+      });
+    }
+  }
   function nowSec() { return Math.floor(Date.now() / 1000); }
 
   var toastTimer = null;
@@ -67,9 +86,10 @@
     SCREENS.forEach(function (s) { $("screen-" + s).hidden = true; });
     $("screen-signin").hidden = false;
     current = "signin";
+    barcode($("barcode"), "mac-watch // owner only");
     api.config().then(function (cfg) {
       if (!cfg.configured || !cfg.clientId) {
-        $("signin-msg").textContent = "Sign-in is not set up yet. On the laptop: ./worker/put-secrets.sh (needs the Google Client ID, your e-mail and a session secret).";
+        $("signin-msg").textContent = "Sign-in is not set up yet: ./worker/put-secrets.sh needs the Google Client ID, your e-mail and a session secret.";
         return;
       }
       waitForGoogle(20, function (ok) {
@@ -87,7 +107,7 @@
     setTimeout(function () { waitForGoogle(tries - 1, cb); }, 500);
   }
   function onCredential(resp) {
-    $("signin-msg").textContent = "Checking...";
+    $("signin-msg").textContent = "checking";
     api.signIn(resp.credential).then(function () {
       $("signin-msg").textContent = "";
       route();
@@ -150,18 +170,18 @@
                  s.paused === "local" ? "paused with the PAUSE file on the Mac (cannot be lifted from here)" : "no";
     var lc = s.lastCapture || {};
     dl($("status-list"), [
-      ["Paused", paused, paused === "no" ? "" : "warn"],
-      ["Lid", s.lid],
-      ["Last shot", lc.epoch ? L.ageString(st.now - lc.epoch) + " ago (" + (lc.reason || "?") + ", " + (lc.result || "?") + ")" : "none yet"],
-      ["Battery", s.battery ? s.battery + " (" + (s.power || "?") + ")" : ""],
-      ["Waiting to upload", s.queue !== undefined ? s.queue + " file(s)" : ""],
-      ["Shot every", s.intervalSec ? s.intervalSec + " s" : ""],
-      ["Status from", s.updated ? L.ageString(st.now - s.updated) + " ago" : ""],
-      ["Polling", st.watching ? "fast (this page is open)" : "normal"],
-      ["Commands waiting", st.pendingCommands ? String(st.pendingCommands) : ""],
-      ["Errors", s.errors || "", "bad wide"]
+      ["paused", paused, paused === "no" ? "" : "warn"],
+      ["lid", s.lid],
+      ["last shot", lc.epoch ? L.ageString(st.now - lc.epoch) + " ago · " + (lc.reason || "?") + " · " + (lc.result || "?") : "none yet"],
+      ["battery", s.battery ? s.battery + " · " + (s.power || "?") : ""],
+      ["waiting to upload", s.queue !== undefined ? s.queue + " file(s)" : ""],
+      ["shot every", s.intervalSec ? s.intervalSec + " s" : ""],
+      ["status from", s.updated ? L.ageString(st.now - s.updated) + " ago" : ""],
+      ["polling", st.watching ? "every 2 s (this page is open)" : "every 20 s"],
+      ["commands waiting", st.pendingCommands ? String(st.pendingCommands) : ""],
+      ["errors", s.errors || "", "bad"]
     ]);
-    $("btn-live").textContent = st.live ? "Stop live view" : "Live view";
+    $("btn-live").textContent = st.live ? "stop live view" : "live view";
     $("live-card").hidden = !st.live;
     $("btn-pause").disabled = st.macPaused === "remote";
     $("btn-resume").disabled = st.macPaused !== "remote";
@@ -182,7 +202,7 @@
     });
   });
   $("btn-record").addEventListener("click", function () {
-    ask("Record the screen now? Length: Settings > Recording length (default 5 minutes). macOS shows its recording indicator. Screen only, no sound.", "Record", function () {
+    ask("Record the screen now? Length: settings > recording length, 5 minutes by default. macOS shows its recording indicator. Screen only, no sound.", "record", function () {
       command("record", "Recording requested. It appears under Files > Recordings when done.");
     });
   });
@@ -228,7 +248,7 @@
       if (!items.length) {
         $("carousel").hidden = true;
         clear($("car-dots"));
-        $("car-meta").textContent = "No screenshots yet. Tap Screenshot now.";
+        $("car-meta").textContent = "No screenshots yet. Tap screenshot now.";
         return false;
       }
       if (items[0].key !== car.firstKey || items.length !== car.items.length) renderCarousel(items);
@@ -254,7 +274,7 @@
       slide.appendChild(img);
       var cap = el("span", "slide-cap");
       cap.appendChild(el("span", "chip", p.time ? p.time.slice(0, 5) : x.name));
-      if (p.reason) cap.appendChild(el("span", "chip reason", p.reason));
+      if (p.reason) cap.appendChild(reasonTag(p.reason));
       slide.appendChild(cap);
       slide.addEventListener("click", function () { openViewer(x); });
       track.appendChild(slide);
@@ -274,8 +294,8 @@
     var x = car.items[i];
     if (!x) return;
     var p = L.parseShotName(x.name);
-    $("car-count").textContent = (i + 1) + " / " + car.items.length;
-    $("car-meta").textContent = (p.date ? p.date + " " + p.time : x.name) + " · " + L.formatBytes(x.bytes) +
+    $("car-count").textContent = pad2(i + 1) + " / " + pad2(car.items.length);
+    $("car-meta").textContent = (p.date ? p.date + " " + p.time : x.name) + " · " + (p.reason || "") + " · " + L.formatBytes(x.bytes) +
       (i === 0 ? " · newest" : "");
     Array.prototype.forEach.call($("car-dots").children, function (d, j) { d.className = j === i ? "on" : ""; });
     $("car-prev").disabled = i === 0;
@@ -285,7 +305,7 @@
     var track = $("car-track");
     i = Math.max(0, Math.min(car.items.length - 1, i));
     var slide = track.children[i];
-    if (slide) track.scrollTo({ left: slide.offsetLeft - track.offsetLeft - parseFloat(getComputedStyle(track).paddingLeft || 0), behavior: "smooth" });
+    if (slide) track.scrollTo({ left: slide.offsetLeft - track.offsetLeft - parseFloat(getComputedStyle(track).paddingLeft || 0), behavior: "auto" });
     carSync(i);
   }
   var carTimer = null;
@@ -333,12 +353,12 @@
   $("btn-files-up").addEventListener("click", function () { showRoot(F.root); });
 
   function setTabs() {
-    ["shots", "recordings", "keep"].forEach(function (k) { $("root-" + k).className = k === F.root ? "active" : ""; });
+    ["shots", "recordings", "keep"].forEach(function (k) { $("root-" + k).className = k === F.root ? "tab active" : "tab"; });
   }
   function endSelect() {
     F.selecting = false; F.selected = {};
     $("select-bar").hidden = true;
-    $("btn-select").textContent = "Select";
+    $("btn-select").textContent = "select";
     Array.prototype.forEach.call(document.querySelectorAll(".thumb.selected"), function (n) { n.classList.remove("selected"); });
   }
 
@@ -348,19 +368,22 @@
     $("day-tools").hidden = true;
     $("btn-more").hidden = true;
     clear($("files-grid"));
-    $("files-path").textContent = { shots: "Screenshots", recordings: "Recordings", keep: "Keep (never deleted automatically)" }[kind];
-    $("files-msg").textContent = "Loading...";
+    $("files-path").textContent = { shots: "SCREENSHOTS // BY DAY", recordings: "RECORDINGS // BY DAY", keep: "KEEP // NEVER DELETED AUTOMATICALLY" }[kind];
+    $("files-msg").textContent = "loading";
     api.days(kind).then(function (d) {
       var ul = $("days-list");
       clear(ul);
       $("files-msg").textContent = d.days.length ? "" : "Nothing here yet.";
-      d.days.forEach(function (x) {
+      d.days.forEach(function (x, i) {
         var li = el("li");
-        var b = el("button", "day-button", x.day);
+        li.appendChild(el("span", "tag", pad2(i + 1)));
+        var body = el("div");
+        var b = el("button", "row-title", x.day);
         b.type = "button";
         b.addEventListener("click", function () { showDay(x.day); });
-        li.appendChild(b);
-        li.appendChild(el("span", "small", x.files + " file(s) · " + L.formatBytes(x.bytes)));
+        body.appendChild(b);
+        body.appendChild(el("p", "subtext", x.files + " file(s) · " + L.formatBytes(x.bytes)));
+        li.appendChild(body);
         ul.appendChild(li);
       });
     }).catch(fail);
@@ -372,13 +395,13 @@
     clear($("files-grid"));
     $("btn-files-up").hidden = false;
     $("day-tools").hidden = F.root === "keep";
-    $("files-path").textContent = day;
+    $("files-path").textContent = { shots: "SCREENSHOTS", recordings: "RECORDINGS", keep: "KEEP" }[F.root] + " // " + day;
     loadMore();
   }
   $("btn-more").addEventListener("click", loadMore);
 
   function loadMore() {
-    $("files-msg").textContent = "Loading...";
+    $("files-msg").textContent = "loading";
     api.files(F.root, F.day, F.next, 60).then(function (f) {
       F.next = f.next;
       $("btn-more").hidden = !f.next;
@@ -394,7 +417,7 @@
     b.type = "button";
     b.setAttribute("data-key", x.key);
     if (/\.mov$/.test(x.name)) {
-      b.appendChild(el("span", "video-label", "Recording " + L.formatBytes(x.bytes)));
+      b.appendChild(el("span", "video-label", "recording · " + L.formatBytes(x.bytes)));
     } else {
       var img = el("img");
       img.loading = "lazy";
@@ -402,7 +425,10 @@
       img.src = api.imgUrl(x.thumb || x.key);
       b.appendChild(img);
     }
-    b.appendChild(el("span", "", (p.time || x.name) + (p.reason ? " · " + p.reason : "")));
+    var cap = el("span", "thumb-cap");
+    cap.appendChild(el("span", "", p.time || x.name));
+    if (p.reason) cap.appendChild(reasonTag(p.reason));
+    b.appendChild(cap);
     var pressTimer = null, longPressed = false;
     b.addEventListener("pointerdown", function () {
       longPressed = false;
@@ -420,7 +446,7 @@
   function startSelect() {
     F.selecting = true;
     $("select-bar").hidden = false;
-    $("btn-select").textContent = "Done";
+    $("btn-select").textContent = "done";
     $("btn-sel-keep").hidden = F.root === "keep";
     updateSelCount();
   }
@@ -473,7 +499,7 @@
     var dry = Object.assign({}, body, { dryRun: true });
     api.purge(dry).then(function (r) {
       if (!r.files) { toast("Nothing to delete."); return; }
-      ask("Delete " + r.files + " file(s), " + L.formatBytes(r.bytes) + "? This cannot be undone.", "Delete", function () {
+      ask("Delete " + r.files + " file(s), " + L.formatBytes(r.bytes) + "? This cannot be undone.", "delete", function () {
         var total = 0;
         var step = function () {
           return api.purge(Object.assign({}, body, { dryRun: false })).then(function (x) {
@@ -545,31 +571,36 @@
         var x = s.byKind[k] || { files: 0, bytes: 0 };
         return [k, x.files + " file(s) · " + L.formatBytes(x.bytes)];
       }));
-      var bars = $("storage-days");
-      clear(bars);
+      // columns standing on an orange baseline; today in orange
+      var cols = $("storage-days");
+      clear(cols);
+      var labels = cols.nextElementSibling;
+      if (!labels || labels.className !== "col-labels") {
+        labels = el("div", "col-labels");
+        cols.parentNode.insertBefore(labels, cols.nextSibling);
+      }
+      clear(labels);
       var max = Math.max.apply(null, s.perDay.map(function (x) { return x.bytes; }).concat([1]));
-      s.perDay.forEach(function (x) {
-        var row = el("div", "bar-row");
-        row.appendChild(el("span", "bar-label", x.day.slice(5)));
-        var track = el("span", "bar-track");
-        var fill = el("span", "bar-fill");
-        fill.style.width = Math.round(x.bytes / max * 100) + "%";
-        track.appendChild(fill);
-        row.appendChild(track);
-        row.appendChild(el("span", "bar-value", L.formatBytes(x.bytes)));
-        bars.appendChild(row);
+      s.perDay.forEach(function (x, i) {
+        var c = el("div", "col" + (i === s.perDay.length - 1 ? " today" : ""));
+        c.title = x.day + " · " + L.formatBytes(x.bytes);
+        var bar = el("i");
+        bar.style.height = Math.round(x.bytes / max * 100) + "%";
+        c.appendChild(bar);
+        cols.appendChild(c);
+        labels.appendChild(el("span", "", x.day.slice(8)));
       });
       var m = s.mac || {};
       dl($("storage-mac"), [
-        ["Free disk", m.diskFreeGB !== null && m.diskFreeGB !== undefined ? m.diskFreeGB + " GB" : "unknown"],
-        ["Waiting to upload", m.queueFiles !== null && m.queueFiles !== undefined ? m.queueFiles + " file(s), " + m.queueMB + " MB" : "unknown"],
-        ["As of", m.updated ? L.ageString(s.now - m.updated) + " ago" : "no status yet"]
+        ["free disk", m.diskFreeGB !== null && m.diskFreeGB !== undefined ? m.diskFreeGB + " GB" : "unknown"],
+        ["waiting to upload", m.queueFiles !== null && m.queueFiles !== undefined ? m.queueFiles + " file(s) · " + m.queueMB + " MB" : "unknown"],
+        ["as of", m.updated ? L.ageString(s.now - m.updated) + " ago" : "no status yet"]
       ]);
       var u = s.usage;
       var lvl = function (a, b) { return a / b >= 0.8 ? "warn" : ""; };
       dl($("storage-usage"), [
-        ["Worker requests", "about " + u.workerRequests + " of " + u.workerLimit, lvl(u.workerRequests, u.workerLimit)],
-        ["B2 downloads", "about " + u.b2Downloads + " of " + u.b2DownloadLimit, lvl(u.b2Downloads, u.b2DownloadLimit)]
+        ["worker requests", "about " + u.workerRequests + " of " + u.workerLimit, lvl(u.workerRequests, u.workerLimit)],
+        ["b2 downloads", "about " + u.b2Downloads + " of " + u.b2DownloadLimit, lvl(u.b2Downloads, u.b2DownloadLimit)]
       ]);
       var notes = [];
       if (s.guard) notes.push("Storage guard last deleted " + s.guard.deleted + " file(s) (" + s.guard.days.join(", ") + ").");

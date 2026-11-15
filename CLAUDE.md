@@ -190,5 +190,11 @@ Drive prune) is history; that code is deleted.
   --posix (shell tests drive the real scripts with real curl against `tests/fake_worker.mjs`,
   which runs `worker/core.js` on node:sqlite) + `tests/worker_test.mjs` + `tests/web_test.js`.
 - Deploy: `make deploy` (wrangler). Secrets: `./worker/put-secrets.sh` (hidden input).
+- The web page follows the owner's Claude Design System artifact "blafortree"
+  (https://claude.ai/artifact/H2B3NrC16z7XMqhmrbuZWv): read its `project/README.md` and
+  `project/tokens.json` before changing the look.
+- Enter trigger: Hammerspoon shoots on every Return/keypad Enter (0.5 s guard in Lua);
+  `trigger.sh enter` has no cooldown (`ENTER_MIN_GAP_SEC=0`); capture publishes with `ln` so
+  simultaneous captures never collide.
 - Pushing: the SSH key needs a passphrase; non-interactive pushes work over HTTPS with
   `git -c credential.helper='!gh auth git-credential' push https://github.com/leNITHISH/butter-bot.git main`.

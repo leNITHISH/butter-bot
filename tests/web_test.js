@@ -43,6 +43,10 @@ function eq(a, b, msg) { const s = JSON.stringify(a) === JSON.stringify(b); ok(s
   ok(!/window\.(alert|confirm|prompt)\(|[^.\w](alert|confirm|prompt)\(/.test(app), "no native alert/confirm/prompt (a <dialog> is used)");
   ok(!/client_secret|GOCSPX|refresh_token|B2_APP_KEY|applicationKey/i.test(app + apijs + html), "no secrets in the web files");
   ok(fs.readFileSync(path.join(ROOT, "web/.assetsignore"), "utf8").includes("README.md"), "web/README.md is not published");
+  const css = fs.readFileSync(path.join(ROOT, "web/style.css"), "utf8");
+  const fonts = [...css.matchAll(/url\("(fonts\/[^"]+)"\)/g)].map((m) => m[1]);
+  ok(fonts.length === 2 && fonts.every((f) => fs.existsSync(path.join(ROOT, "web", f))), "both self-hosted fonts exist (CSP allows fonts from this site only)");
+  ok(fs.readdirSync(path.join(ROOT, "web/fonts")).filter((f) => /^LICENSE/.test(f)).length === 2, "font licences (OFL) ship with the fonts");
   ok(!fs.existsSync(path.join(ROOT, "web/drive.js")) && !fs.existsSync(path.join(ROOT, "netlify.toml")), "Drive client and Netlify config are gone");
 
   // ---- logic ------------------------------------------------------------------------------
