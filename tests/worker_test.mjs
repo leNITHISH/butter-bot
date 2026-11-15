@@ -440,7 +440,7 @@ console.log("== headers, static pages, secrets");
     eq(r.headers.get("Content-Security-Policy"), CSP, "CSP on " + p);
   }
   r = await S.req("GET", "/README.md");
-  ok(r.status === 404 || !/Backblaze key/.test(await r.text()), "README is not served");
+  eq(r.status, 404, "README is not served (web/.assetsignore)");
   await S.login();
   await S.req("POST", "/mac/status", { mac: true, body: JSON.stringify({ updated: 1 }) });
   for (const p of ["/auth/config", "/api/status", "/api/storage", "/api/settings", "/api/days?kind=shots", "/api/live", "/health"]) await noSecret(await S.api("GET", p), p);

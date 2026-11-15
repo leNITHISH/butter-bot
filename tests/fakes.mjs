@@ -123,6 +123,9 @@ export function makeAssets() {
       let p = new URL(request.url).pathname;
       if (p === "/") p = "/index.html";
       const f = path.join(ROOT, "web", path.normalize(p).replace(/^(\.\.[/\\])+/, ""));
+      // like Cloudflare: files named in web/.assetsignore are not published
+      const ignored = fs.readFileSync(path.join(ROOT, "web/.assetsignore"), "utf8").split("\n").map((x) => x.trim()).filter(Boolean);
+      if (ignored.includes(path.basename(f))) return new Response("not found", { status: 404 });
       if (!f.startsWith(path.join(ROOT, "web")) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) return new Response("not found", { status: 404 });
       const type = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css" }[path.extname(f)] || "application/octet-stream";
       return new Response(fs.readFileSync(f), { headers: { "Content-Type": type } });

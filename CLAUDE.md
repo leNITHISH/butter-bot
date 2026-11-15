@@ -166,9 +166,29 @@ cleanly with SIGINT).
 - Hammerspoon: fourth LaunchAgent opens it at login and the upload job restarts it if it dies
   (`state/hammerspoon-enabled`).
 
-## Plans
+## Current architecture (replaced Google Drive on 2026-11-15, see PLAN.md and its handoff log)
 
-**Google Drive is being replaced** by Backblaze B2 + a free Cloudflare Worker (owner's decision, no payment
-card anywhere). The full spec, the owner's setup steps and the work breakdown are in `PLAN.md`. Until that
-lands, everything above still describes the running system; whoever finishes `PLAN.md` step W6 must update
-this file to match.
+**Storage is Backblaze B2, control is a Cloudflare Worker.** Everything above about Google Drive
+(`control/` markers, `setup-drive.sh`, `setup-oauth.sh`, Drive scopes, the Netlify dashboard,
+Drive prune) is history; that code is deleted.
+
+- Bucket `macwatch-twjdnu` (private, lifecycle backstop on shots/thumbs/recordings 30+1 days,
+  live 1+1, none on keep/). Mac uploads with `rclone move` to the `b2` remote, then
+  `POST /mac/index`. Two bucket-restricted keys: `macwatch-mac` (rclone on the Mac),
+  `macwatch-worker` (Worker secret).
+- Worker `butter-bot` at https://butter-bot.butter-bot-worker.workers.dev, D1 `macwatch`
+  (id in `worker/wrangler.toml`), crons `*/15` (retention + storage guard) and `17 3` (reconcile).
+  Serves `web/`. Sign in with Google (identity only), one `ALLOWED_EMAIL`.
+- Mac: fourth LaunchAgent `com.macwatch.listen` (`bin/listen.sh`, KeepAlive) polls
+  `/mac/poll` every 20 s, 2 s while the page is open; runs commands (snap, record, pause,
+  resume) at most once, applies `set` lines through `remote_bounds`, live frames, posts status.
+  `bin/api.sh` passes the token to curl on stdin. `bin/setup-remote.sh` makes the rclone remote
+  and the `.mac-token`; the Worker stores only its SHA-256 (`MAC_TOKEN_HASH`).
+- Settings table: `web/logic.js` (shared by page and Worker) must match `remote_bounds` in
+  `bin/lib.sh` for the Mac keys; tests check it. Worker-only: `STORAGE_SOFT_LIMIT_GB`.
+- Tests: `make check` = dash/shellcheck/lua/node lint + `tests/run.sh` under dash and bash
+  --posix (shell tests drive the real scripts with real curl against `tests/fake_worker.mjs`,
+  which runs `worker/core.js` on node:sqlite) + `tests/worker_test.mjs` + `tests/web_test.js`.
+- Deploy: `make deploy` (wrangler). Secrets: `./worker/put-secrets.sh` (hidden input).
+- Pushing: the SSH key needs a passphrase; non-interactive pushes work over HTTPS with
+  `git -c credential.helper='!gh auth git-credential' push https://github.com/leNITHISH/butter-bot.git main`.

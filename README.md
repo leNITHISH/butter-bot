@@ -2,10 +2,16 @@
 
 A small, free, unattended utility for one MacBook (macOS 26 Tahoe), for its owner only.
 
-While the lid is open it takes a screenshot every 5 minutes and uploads it to Google Drive.
-If the Mac is offline the shots queue on disk and upload when the internet returns.
-From a phone you can drop a marker into Drive to get an instant screenshot or a
-5-minute screen recording. Optionally the spacebar (taken 3 seconds after you stop typing, so it shows what you just typed), waking up, and locking/unlocking also take a shot.
+While the lid is open it takes a screenshot every 5 minutes and uploads it to a private
+Backblaze B2 bucket. If the Mac is offline the shots queue on disk and upload when the internet
+returns. A small web page (a free Cloudflare Worker, signed in with your Google account) shows
+whether the Mac is alive and lets you take a screenshot now, watch a live view, start a screen
+recording, pause, change settings, browse and download shots on your phone, delete old ones and
+watch the storage used. Optionally the spacebar (taken 3 seconds after you stop typing, so it
+shows what you just typed), waking up, and locking/unlocking also take a shot.
+
+Everything is free and no payment card is attached anywhere (Backblaze: 10 GB free; Cloudflare
+Workers + D1 free plan). A storage guard deletes the oldest shots before the 10 GB is reached.
 
 Nothing is hidden. It is easy to see (`status.sh`), pause (`touch PAUSE`) and remove
 (`uninstall.sh`). macOS's own recording indicator is left alone.
@@ -23,20 +29,22 @@ Nothing is hidden. It is easy to see (`status.sh`), pause (`touch PAUSE`) and re
 ## What gets captured, and where it goes
 
 ```
-Google Drive/
-  mac-watch/
-    shots/2026-11-13/20261113-152800-interval.jpg    every 5 min
-                     20261113-152905-space.jpg       spacebar
-                     20261113-153012-remote.jpg      from your phone
-    recordings/2026-11-13/20261113-153100-rec.mov    5-min recording
-    control/                                         the markers you drop (see below)
+Backblaze B2 bucket macwatch-twjdnu (private)
+  shots/2026-11-13/20261113-152800-interval.jpg    every 5 min
+                   20261113-152905-space.jpg       spacebar
+                   20261113-153012-remote.jpg      "Screenshot now" on the web page
+  thumbs/2026-11-13/...                            320 px copies for the web page's grids
+  recordings/2026-11-13/20261113-153100-rec.mov    Record button
+  keep/2026-11-13/...                              what you tapped Keep on: never deleted automatically
+  live/...                                         live-view frames, gone after a day
 ```
 
 The word before `.jpg` says **why** the shot exists: `interval`, `login`, `remote`,
 `space`, `wake`, `lock`, `unlock`.
 
-Files older than `RETENTION_DAYS` (14) are deleted from Drive permanently (not into the
-Trash, which would keep eating your quota).
+Shots and recordings older than `RETENTION_DAYS` (14, changeable on the web page) are deleted by
+the Worker. Above `STORAGE_SOFT_LIMIT_GB` (8 GB) it deletes the oldest days first. `keep/` is never
+touched by either.
 
 ## Install on the Mac
 
@@ -44,11 +52,15 @@ You need [Homebrew](https://brew.sh). Everything else ships with macOS.
 
 ```sh
 brew install rclone
-git clone <your private repo> ~/mac-watch      # or: untar the output of `make dist` into ~/mac-watch
+git clone <your private repo> ~/mac-watch      # or, if you already have it: cd ~/mac-watch && git pull
 cd ~/mac-watch
-./bin/setup-drive.sh      # one-time Google login (explains the trade-off first)
+./bin/setup-remote.sh     # asks for the Mac's Backblaze key (hidden), makes the Mac token, prints its hash
 ./bin/install.sh          # writes and loads the LaunchAgents
 ```
+
+`setup-remote.sh` prints a **hash** of the new Mac token (not the token). On the laptop, in the
+repo, run `./worker/put-secrets.sh MAC_TOKEN_HASH` and paste it; then run `./bin/setup-remote.sh`
+on the Mac again and it should say the Worker accepts the Mac.
 
 Then do these two things, in this order:
 
@@ -60,70 +72,74 @@ Then do these two things, in this order:
    they are off in System Settings, General, *Login Items & Extensions*, nothing runs.
 
 Then run `./bin/selftest.sh`. It opens a test screenshot and asks you to confirm you see
-your real windows, tests Drive, the phone markers and the stop switch, and prints PASS or FAIL.
-If anything fails, run `./bin/diagnose.sh` and paste the output back to Claude. It prints
-no secrets.
+your real windows, checks Backblaze and the Worker, asks you to press **Screenshot now** on your
+phone, tests the stop switch, and prints PASS or FAIL. If anything fails, run
+`./bin/diagnose.sh` and paste the output back to Claude. It prints no secrets.
 
-### Google Drive and the permission trade-off
+### Keys and secrets (where each one lives)
 
-`setup-drive.sh` creates an rclone remote named `gdrive` with scope **`drive` (full
-access)**. Why: you create the phone markers yourself in the Drive app, and the narrower
-`drive.file` scope can only see files rclone itself created, so it would never see them.
+| What | Where | Who can read it |
+|---|---|---|
+| Mac's Backblaze key (`macwatch-mac`) | rclone config on the Mac, obscured, `chmod 600` | you |
+| Mac token | `~/mac-watch/.mac-token`, `chmod 600`, git-ignored | you; the Worker only has its SHA-256 |
+| Worker's Backblaze key (`macwatch-worker`), session secret, allowed e-mail, Google client ID | Cloudflare Worker secrets (`./worker/put-secrets.sh`) | the Worker |
+| Your browser session | an `HttpOnly; Secure; SameSite=Strict` cookie, 14 days | nobody, not even the page's JavaScript |
 
-The cost: anyone who gets a copy of `~/.config/rclone/rclone.conf` can read and write your
-**whole** Drive. What limits that: the script sets the file to `chmod 600`, keep FileVault
-on, and you can revoke the token any time at <https://myaccount.google.com/permissions>.
-The script explains this and asks you to type `yes` before anything happens.
-mac-watch never prints, logs or commits the rclone config or token.
+Both Backblaze keys are limited to the one bucket. Nothing is ever printed, logged or committed.
+Sign out on the web page signs out **every** device.
 
 ## Using it
 
 | I want to | Do this |
 |---|---|
-| See what it is doing | `./bin/status.sh` |
-| Stop everything instantly | `touch ~/mac-watch/PAUSE` (nothing captures, records or uploads) |
+| See what it is doing | the web page, or `./bin/status.sh` on the Mac |
+| Stop everything instantly | `touch ~/mac-watch/PAUSE` (nothing captures, records, uploads or even talks to the Worker) |
 | Resume | `rm ~/mac-watch/PAUSE` |
-| Instant screenshot from my phone | Open the dashboard (below) and tap **Screenshot now**. Or, without it: in the Drive app, in `mac-watch/control/`, create an **empty folder** named `snap-now` |
-| 5-minute screen recording from my phone | Tap **Record 5 min**, or create an empty folder named `record-5min` |
-| Pause remotely / resume | Tap **Pause** / **Resume**, or create a folder named `pause` / `resume`. (Only the `PAUSE` file on the Mac stops Drive polling too, and only the Mac can lift it.) |
-| Keep something forever | Tap **Keep** on it in the dashboard (or move it into `mac-watch/keep/` in Drive). `keep/` is never pruned. |
-| Copy everything to my other laptop | `./bin/archive-pull.sh` there (see **Archive** below) |
+| Instant screenshot from my phone | web page, **Screenshot now** (shows up in about 3 to 10 s while the page is open) |
+| See the screen right now | **Live view**: a small frame every 4 s, stops 10 minutes after you close the page |
+| Screen recording from my phone | **Record** (length = `RECORD_SEC`, default 5 min) |
+| Pause remotely / resume | **Pause** / **Resume**. A local `PAUSE` file is stronger and only the Mac can lift it |
+| Download one screenshot to my phone | **Files**, pick a day, tap the shot, **Download** |
+| Keep something forever | **Keep** in the viewer, or long-press to select several |
+| Free up space | **Files > Clean up** (older than N days) or **Delete this day**; it shows the count and MB first |
+| Watch the storage | **Storage**: used of 10 GB, per day, growth, days until the guard, the Mac's free disk |
+| Copy things to my other laptop | `./bin/archive-pull.sh` there (see **Archive** below) |
 | Remove it | `./bin/uninstall.sh` (keeps your data; `--purge` also deletes local queue/logs) |
 
-**Markers.** Any file *or* folder in `control/` whose name starts with `snap-now` or
-`record-5min` (any capitals, extra text is fine: `Snap-Now (2)` works). mac-watch checks every
-minute while the lid is open and the Mac is online. It **deletes the marker first** and only
-then acts, so a marker it cannot delete never fires over and over. A marker older than 30
-minutes is deleted without acting, so one you made while the Mac was off does not go off hours
-later. After a recording finishes, a small `control/done-record-5min-<time>.txt` appears so you
-know it ran. A snapshot shows up in `shots/` within about a minute and a half.
+**Commands from the page** are queued on the Worker; the Mac asks for them every 20 s (every 2 s
+while the page is open). Each runs at most once, and one older than `MARKER_MAX_AGE_MIN` (30 min)
+is dropped, so a command sent while the Mac slept does not fire hours later (pause/resume always
+apply). A sleeping Mac, a closed lid or a `PAUSE` file means nothing happens: the page then says
+"last seen X ago".
 
 **Recording** is screen only: no audio, no camera. If the lid closes or `PAUSE` appears
 mid-recording it stops and keeps what it has.
 
-## Web dashboard (optional)
+## The web page
 
-A small static page, hosted free on Netlify, signed in with your Google account, that talks
-straight to your Drive: Mac status ("last seen 3 min ago, battery 71%"), command buttons, a
-gallery with **Keep**, and a settings form. No server, no secrets on the site. Setup: `web/README.md`.
+`https://butter-bot.butter-bot-worker.workers.dev` (a Cloudflare Worker, free plan). Sign in with
+Google; only the e-mail stored as `ALLOWED_EMAIL` gets in. Bytes live in Backblaze and are
+streamed through the Worker (no Backblaze key ever reaches the browser); everything small (file
+list, commands, status, settings) lives in Cloudflare D1. Details, deploying and the secrets:
+`web/README.md`.
 
-Settings changed there are stored in Drive `control/config.remote` and applied by the Mac within
-about a minute, but **only** a fixed list of numbers within fixed ranges (never paths, commands or
-flags). `./bin/status.sh` shows when settings from the page are active.
+Settings changed there reach the Mac with the next poll, but **only** a fixed list of numbers
+within fixed ranges (never paths, commands or flags), and the Mac checks them again against its
+own table. `./bin/status.sh` shows when settings from the page are active.
 
 ## Archive
 
-Drive keeps shots for `RETENTION_DAYS` (14). To keep things longer: tap **Keep** (moves them into
-`keep/`, never pruned), then on your other laptop (needs rclone; log in once with
-`./bin/setup-oauth.sh`):
+Shots stay for `RETENTION_DAYS` (14). To keep things longer: tap **Keep** (moves them into
+`keep/`, never pruned), then on your other laptop (needs rclone, this repo and a third Backblaze
+key, read access is enough: `./bin/setup-remote.sh --rclone-only`):
 
 ```sh
 ./bin/archive-pull.sh                    # copy keep/ to ~/mac-watch-archive
 ./bin/archive-pull.sh --all --days 3     # also everything from the last 3 days
-./bin/archive-pull.sh --free-drive       # after a VERIFIED copy, delete from Drive (asks first)
+./bin/archive-pull.sh --free-remote      # after a VERIFIED copy, delete from Backblaze (asks first)
 ```
 
-Without `--free-drive` nothing is ever deleted from Drive.
+Without `--free-remote` nothing is ever deleted.
 
 ## Settings (`config.env`)
 
@@ -136,14 +152,15 @@ run `./bin/install.sh` again (those are written into the LaunchAgents).
 | `MAX_WIDTH`, `JPEG_QUALITY` | 1440, 60 | screenshot size/quality (small screens are never enlarged) |
 | `SCREENCAPTURE_EXTRA` | empty | e.g. `-m` for main display only |
 | `SKIP_IDENTICAL`, `SKIP_MAX_AGE_SEC` | 1, 3600 | skip an interval shot if the screen did not change, but never go longer than an hour without one |
-| `RCLONE_REMOTE`, `DRIVE_FOLDER` | gdrive, mac-watch | where to upload |
-| `RETENTION_DAYS` | 14 | delete older Drive files |
+| `RCLONE_REMOTE`, `B2_BUCKET` | b2, macwatch-twjdnu | where to upload |
+| `WORKER_URL` | the workers.dev address | the web page and the Mac's command channel |
+| `RETENTION_DAYS` | 14 | (set on the web page) the Worker deletes older shots |
 | `QUEUE_MAX_FILES`, `QUEUE_MAX_MB` | 2000, 2000 | local cap while offline; oldest deleted first and logged |
 | `KEEP_AWAKE` | 0 | `1` = hold `caffeinate -di` while the lid is open |
-| `CONTROL_POLL_SEC` | 60 | marker polling and upload job interval |
-| `MARKER_MAX_AGE_MIN` | 30 | older markers are ignored |
+| `CONTROL_POLL_SEC` | 60 | upload job interval |
+| `MARKER_MAX_AGE_MIN` | 30 | older commands from the page are ignored |
 | `RECORD_SEC` | 300 | recording length |
-| `UPLOAD_EVERY_SEC` | 300 | shots are batched: uploaded together at most this often (immediately after the network returns, and for `snap-now`) |
+| `UPLOAD_EVERY_SEC` | 300 | shots are batched: uploaded together at most this often (immediately after the network returns, and for Screenshot now) |
 | `SPACE_MIN_GAP_SEC`, `EVENT_MIN_GAP_SEC` | 30, 30 | at most one spacebar / wake / lock shot per this many seconds |
 
 **Decisions made while you were away** (the three "open" questions): `KEEP_AWAKE` is **off**,
@@ -155,15 +172,16 @@ main one only. "Record" means **screen video only**.
 
 ## How it works
 
-Three LaunchAgents (they need your logged-in graphical session, so they are Agents, not Daemons):
+Four LaunchAgents (they need your logged-in graphical session, so they are Agents, not Daemons):
 
 | Agent | Runs | Job |
 |---|---|---|
 | `com.macwatch.capture` | at login and every `CONTROL_POLL_SEC` | `trigger.sh interval`, which takes a shot only once `INTERVAL_SEC` has passed (so the interval can be changed live) |
-| `com.macwatch.upload` | at login, every `CONTROL_POLL_SEC`, and when the network config changes | markers, upload, prune |
-| `com.macwatch.record` | only when asked | `record.sh`, started by the upload job for `record-5min` |
+| `com.macwatch.upload` | at login, every `CONTROL_POLL_SEC`, and when the network config changes | queue cap, batch upload to B2, tell the Worker what arrived |
+| `com.macwatch.listen` | always (KeepAlive) while logged in | polls the Worker: commands, settings, live view, status |
+| `com.macwatch.record` | only when asked | `record.sh`, started by `listen.sh` for Record |
 
-The third exists because a 5-minute recording cannot live inside a 60-second polling job,
+The record agent exists because a 5-minute recording cannot live inside a polling loop,
 and a recorder started in the background by a script cannot be stopped cleanly.
 
 **One gate.** Everything goes through `gate()` in `bin/lib.sh`: no `PAUSE` file, and lid open
@@ -171,12 +189,14 @@ and a recorder started in the background by a script cannot be stopped cleanly.
 this is logged once). **One entry point**: every trigger calls `bin/trigger.sh <reason>`,
 which applies a per-reason debounce, then `capture.sh`.
 
-Capture: `screencapture`, shrunk with `sips`, written to `tmp/`, then renamed into
-`queue/` so the uploader never sees a half-written file. Upload: `rclone move` (the local file
-is deleted only after a verified upload). Offline: the shot just waits in `queue/`.
+Capture: `screencapture`, shrunk with `sips` (plus a 320 px thumbnail), written to `tmp/`, then
+renamed into `queue/` so the uploader never sees a half-written file. Upload: one `rclone move`
+to B2 (the local file is deleted only after a verified upload), then `POST /mac/index` so the
+page lists it (kept in `state/index-pending` until the Worker confirms). Offline: the shot just
+waits in `queue/`.
 
-Auth failures are loud: `ERROR` in `log/upload.log` and shown by `status.sh`, with the fix
-(`rclone config reconnect gdrive:`).
+Failures are loud: `ERROR` in `log/upload.log` or `log/listen.log` and shown by `status.sh`,
+with the fix (`./bin/setup-remote.sh`, or `./worker/put-secrets.sh MAC_TOKEN_HASH`).
 
 ### Triggers
 
@@ -184,7 +204,7 @@ Auth failures are loud: `ERROR` in `log/upload.log` and shown by `status.sh`, wi
 |---|---|---|
 | Every 5 min, login | launchd | built |
 | Lid open/closed gate | `ioreg` | built |
-| Phone markers `snap-now`, `record-5min` | Drive `control/` poll | built |
+| Screenshot now, Record, Live, Pause/Resume | web page -> Worker -> `listen.sh` poll (2 s while the page is open) | built |
 | Internet comes back | the upload job polls, plus `WatchPaths` on network config | built |
 | Spacebar (3 s after you stop typing), wake, lock, unlock | Hammerspoon (below) | built, optional |
 | Charger unplugged | logged in `log/events.log` | built |
@@ -213,21 +233,17 @@ If Hammerspoon turns out flaky, a lighter fallback needs no extra permission: po
 (`ioreg -c IOHIDSystem | grep HIDIdleTime`) and trigger on any keyboard or mouse activity.
 Say the word and it can be added.
 
-## Rate limits and the Google OAuth client
+## Free limits
 
-rclone's built-in Google client ID is shared by everyone, and polling every minute can hit
-`rateLimitExceeded` (it shows in `log/upload.log` and `selftest.sh`; mac-watch then pauses
-Drive calls for 5 minutes and retries). The permanent fix is your own OAuth client:
+| Service | Free allowance (check current terms) | How mac-watch stays inside it |
+|---|---|---|
+| Backblaze B2 storage | 10 GB | storage guard at 8 GB (setting), retention 14 days, thumbnails for grids |
+| B2 downloads (class B) | 2,500 calls/day | thumbnails cached by the browser for a year; the page shows today's estimate |
+| B2 list/authorize/copy (class C) | 2,500 calls/day | the file list is in D1, not listed from B2; one rclone run per batch; Worker auth cached 23 h |
+| Cloudflare Workers | 100,000 requests/day | about 4,300/day idle polling, about 300 per 10 min with the page open |
+| Cloudflare D1 | free plan | at most one write per poll |
 
-```sh
-./bin/setup-oauth.sh
-```
-
-It prints the Google Cloud Console steps (create a project, enable the Drive API, make a
-*Desktop app* OAuth client), asks you to paste the client ID and secret, stores them in rclone's
-config and re-runs the login. **Publish the consent screen as "In production"**: in "Testing"
-status Google expires refresh tokens after about 7 days and everything silently stops.
-(Check Google's current documentation; this has changed before.)
+If Backblaze ever refuses because a daily cap is reached, uploads pause for an hour and retry.
 
 ## Problems
 
@@ -236,7 +252,11 @@ status Google expires refresh tokens after about 7 days and everything silently 
   weeks later, that is the first suspect.
 - **Nothing happens after login**: System Settings, General, Login Items & Extensions, make
   sure the mac-watch items are allowed. `./bin/status.sh` shows whether the agents are loaded.
-- **Upload says AUTH PROBLEM**: `rclone config reconnect gdrive:`.
+- **Upload says AUTH PROBLEM**: the Mac's Backblaze key. `rclone config delete b2`, then
+  `./bin/setup-remote.sh`.
+- **Web page says "The Mac has not connected yet"** or `status.sh` says the Worker is REFUSING:
+  the token hash. On the laptop `./worker/put-secrets.sh MAC_TOKEN_HASH`, paste the hash that
+  `./bin/setup-remote.sh` prints on the Mac.
 - **Anything else**: `./bin/diagnose.sh`, paste the output. Logs are in `log/` (about 1 MB each).
 
 ## For developers (Linux)
@@ -244,22 +264,29 @@ status Google expires refresh tokens after about 7 days and everything silently 
 Development happens on Linux; the Mac-only commands are stubbed in `tests/stubs/`.
 
 ```sh
-make check     # dash -n, shellcheck -s sh, lua syntax, then tests under dash and bash --posix
+make check     # dash -n, shellcheck -s sh, lua + js syntax, then tests under dash and bash --posix
+make deploy    # the Worker + web page (cd worker && npm install && npx wrangler login, once)
 make dist      # dist/mac-watch.tar.gz
 ```
 
 POSIX `sh` only (macOS has bash 3.2 and a BSD userland: no `sed -i`, `date -d`, `stat -c`,
-`readlink -f`, `xargs -r`, `grep -P`). If real `rclone` is installed, the tests also run
-the marker/upload/prune logic against it using rclone's local backend.
+`readlink -f`, `xargs -r`, `grep -P`). The shell tests run the real Mac scripts with real curl
+against the real Worker code (`tests/fake_worker.mjs`: node:sqlite stands in for D1, a folder for
+B2). If real `rclone` is installed, the upload and archive logic also runs against rclone's local
+backend. The Worker has its own node tests (`tests/worker_test.mjs`).
 
 Layout:
 
 ```
 bin/lib.sh        config, logging, lid_open(), gate(), locks
 bin/trigger.sh    gate + debounce + capture          bin/capture.sh   one screenshot
-bin/record.sh     screen recording                   bin/upload.sh    markers, upload, prune, queue cap
+bin/record.sh     screen recording                   bin/upload.sh    upload to B2, index, queue cap
+bin/listen.sh     poll the Worker (commands, live)   bin/api.sh       curl wrapper for the Worker
+bin/report.sh     status.json for the page           bin/setup-remote.sh  B2 key + Mac token
 bin/status.sh     bin/diagnose.sh  bin/selftest.sh   bin/install.sh   bin/uninstall.sh
-bin/setup-drive.sh  bin/setup-oauth.sh  bin/make-wrapper.sh  bin/heartbeat.sh
+bin/archive-pull.sh  bin/make-wrapper.sh  bin/heartbeat.sh
+worker/           Cloudflare Worker (core.js, b2.js, schema.sql, wrangler.toml, put-secrets.sh)
+web/              the web page (served by the Worker)
 hammerspoon/init.lua    tests/run.sh  tests/stubs/    config.env
 queue/ tmp/ log/ state/ PAUSE    runtime data, not in git
 ```

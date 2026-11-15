@@ -89,12 +89,13 @@
     return { date: m[1] + "-" + m[2] + "-" + m[3], time: m[4] + ":" + m[5] + ":" + m[6], reason: m[7] };
   }
 
+  // Decimal units, like Backblaze ("10 GB free" = 10,000,000,000 bytes).
   function formatBytes(n) {
     n = Number(n) || 0;
-    if (n < 1024) return n + " B";
-    if (n < 1048576) return Math.round(n / 1024) + " KB";
-    if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
-    return (n / 1073741824).toFixed(2) + " GB";
+    if (n < 1000) return n + " B";
+    if (n < 1e6) return Math.round(n / 1e3) + " KB";
+    if (n < 1e9) return (n / 1e6).toFixed(1) + " MB";
+    return (n / 1e9).toFixed(2) + " GB";
   }
 
   // Storage meter colour: amber from 70 %, red from 90 %.

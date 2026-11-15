@@ -4,7 +4,7 @@
 owner's Arch machine with a browser and real network access to Cloudflare and Backblaze, which the
 original sandbox did not have). Read `CLAUDE.md` first (rules, layout), then `README.md`.
 
-Last updated 2026-11-15. Nothing in this plan is built yet.
+Last updated 2026-11-15. **W0 to W4 done and deployed; W5 (Mac cut-over) and the owner part of W6 remain.** See the handoff log at the end.
 
 ---
 
@@ -471,10 +471,57 @@ download a single screenshot, purge with preview, and the storage meter all work
 
 ## Handoff log (the Builder instance appends here)
 
-```
-date / who:
-what was verified live (section 11):
-what was built / changed:
-deviations from this plan and why:
-what the owner still has to do:
-```
+### 2026-11-15, Builder (Claude Code on the Arch laptop, Chrome + wrangler)
+
+**Verified live (section 11):**
+1. Cloudflare, no card asked anywhere: Workers deploy, D1 create + schema, two cron triggers,
+   Static Assets (`run_worker_first`), workers.dev subdomain `butter-bot-worker` (the new TLS
+   certificate took a few minutes). wrangler 4.162.0.
+2. Backblaze, no card asked: bucket `macwatch-twjdnu` created (private, SSE-B2, Object Lock off),
+   lifecycle rules set as in 2.1. The owner made the two keys; `put-secrets.sh` authorized the
+   worker key against B2 (restricted to the bucket) before storing it. Not checked yet: what B2
+   does above 10 GB with no card (the guard keeps us at 8 GB).
+3. Not tested yet: the Mac key with reduced capabilities (the owner made "Read and Write" keys,
+   the simple option in 2.1).
+4. Not relied on: the Cache API. Images are sent `Cache-Control: private, max-age=31536000, immutable`.
+5. Google sign-in works for real: new *Web application* client, the owner signed in on the
+   deployed page and the Worker's own RS256 verification accepted the token.
+6. `wrangler dev` not used: the shell tests run `worker/core.js` in node (node:sqlite as D1, a
+   folder as B2) and the Mac scripts talk to it with real curl. That covered more than a dev
+   server would without B2 keys on this laptop.
+
+**Built:** everything in W1 to W3 as specified, plus the parts of W6 that are code: Drive and
+Netlify code and docs removed (`setup-drive.sh`, `setup-oauth.sh`, `web/drive.js`,
+`web/config.js`, `netlify.toml`, the marker/prune/config.remote code and their tests). README,
+`web/README.md`, CLAUDE.md updated. `make check` green under dash and bash --posix (272 shell
+checks per shell, 175 Worker checks, 74 web checks; real-rclone section included).
+
+**Deviations, and why:**
+- `GOOGLE_CLIENT_ID` is a Worker **secret** set by `put-secrets.sh`, not a `[vars]` entry, so
+  setting it needs no file edit and redeploy. It is public either way.
+- Upload: one `rclone move` for all kinds with `--include` filters and `--no-check-dest` (every
+  rclone start costs a B2 authorize, a class C call; `--no-check-dest` skips a listing).
+  `--now` (after Screenshot now, after a recording) uses min-age 0. Files only enter `queue/`
+  by atomic `mv`, so they are always complete; batches keep the 15 s margin.
+- Live frames are not deleted by the Worker (deleting would need a class C listing per batch).
+  The B2 lifecycle rule `live/` 1+1 days does it; the Worker drops their D1 rows after 2 days.
+- Remote shot debounce lowered from 20 s to 5 s (two taps 10 s apart are two shots; the
+  Worker merges taps within 10 s).
+- `record.sh` no longer writes `done-*.txt` notes (no Drive `control/`). The recording appears in
+  Files > Recordings, and it uploads at once (`MW_NO_UPLOAD=1` keeps it local for selftest).
+- `archive-pull.sh --free-drive` is now `--free-remote` (the old flag still works). It uses
+  `--b2-hard-delete`; the page's list catches up at the daily reconcile.
+- Purge by key also deletes the shot's thumbnail. Keep moves only the full shot (the Keep
+  grid shows the full image).
+- `formatBytes` uses decimal units, like Backblaze (10 GB = 10e9 bytes).
+
+**Owner still has to do:**
+- W5, on the Mac: `git pull`; `./bin/setup-remote.sh` (paste the `macwatch-mac` key; it prints a
+  hash); on the laptop `./worker/put-secrets.sh MAC_TOKEN_HASH` and paste the hash; on the Mac
+  `./bin/setup-remote.sh` again (should say OK), `./bin/install.sh`, `./bin/selftest.sh`, then
+  paste the output back. Watch `./bin/status.sh` for a day.
+- W6, accounts: revoke the old rclone Drive token (myaccount.google.com/permissions); delete the
+  old Drive OAuth *Desktop* client in Google Cloud (keep the new Web client); delete the Netlify
+  site. On the Mac `rclone config delete gdrive` (optional).
+- Turn on 2-step verification for Cloudflare and Backblaze if it is not on (section 13).
+- Optional: `npx wrangler tail` while testing from the phone shows Worker errors live.

@@ -1,60 +1,68 @@
-# mac-watch dashboard (optional)
+# mac-watch web page
 
-A static web page for your phone: see whether the Mac is alive, take a screenshot, start a
-recording, pause/resume, change settings, browse shots, and tap **Keep** on the ones to archive.
+The phone/laptop page: is the Mac alive, **Screenshot now**, **Live view**, **Record**,
+**Pause/Resume**, a file explorer (download one shot to the phone, Keep, delete, clean up by
+age), a storage monitor and settings.
 
-**How it works.** Netlify only serves these files. There is no server, no database, no login
-system of its own, and no secret anywhere on the site. The page signs you in with **Google**
-and then talks straight to **your Google Drive**, the same folder the Mac uploads to. The Mac
-and the page never talk to each other; they leave notes in Drive (`control/`) that the other
-reads. So protection comes from Google: without signing in to your account, the page shows
-nothing. (Netlify's own password protection is a paid feature, which is why it is not used.)
+Address: **https://butter-bot.butter-bot-worker.workers.dev**
 
-## Set up (about 15 minutes, free)
+## How it works
 
-1. **Google client for the page.** In the Google Cloud console, same project as before:
-   *APIs & Services, Credentials, Create credentials, OAuth client ID*, application type
-   **Web application**. Under **Authorised JavaScript origins** add
-   `https://butter-bot.netlify.app` (use your real Netlify address) and, for testing on your
-   laptop, `http://localhost:8080`. No redirect URI is needed. Create it and copy the **Client
-   ID**. (The page does not use the client secret; ignore it.)
-   While the consent screen is in "Testing", your own Google account must be listed under
-   *Audience, Test users*.
-2. **Put the ID in `web/config.js`** (`clientId:`) and push it to GitHub. A client ID is public by
-   design; it is safe in the repo.
-3. **Netlify.** *Add new site, Import an existing project, GitHub*, pick this repo, branch
-   `main`. Leave the build command empty. `netlify.toml` already sets the publish folder to
-   `web`. Name the site `butter-bot` to get `butter-bot.netlify.app`.
-   If Netlify marks the site **private** (new free teams may default to that), the page will ask
-   for a Netlify login first. Either log in to Netlify on your phone, or set the site to public in
-   *Site configuration, Visitor access*: the page holds no secrets.
-4. **Open the address, tap Sign in with Google.** Google warns that the app is unverified (it is
-   yours): *Advanced, continue, Allow*. Tick the Drive permission.
-
-Try it on your laptop first:
-
-```sh
-cd web && python3 -m http.server 8080      # then open http://localhost:8080
+```
+ Mac --rclone (b2)---------> Backblaze B2 (private bucket: the bytes)
+ Mac <--poll 20 s / 2 s----> Cloudflare Worker "butter-bot" + D1 <--cookie-- this page
+                              |- serves these files (web/) with a strict CSP
+                              '- streams images/videos from B2 (no B2 key in the browser)
 ```
 
-## What it can and cannot do
+- The page and the Worker are one origin. The Worker serves `web/` as static assets and adds the
+  security headers (CSP, nosniff, no-referrer, noindex, no framing) to every response.
+- **Sign in with Google** (identity only, no Google API access). The Worker verifies Google's
+  signed ID token itself (signature, issuer, audience, expiry, verified e-mail) and lets in only
+  `ALLOWED_EMAIL`. It then sets a signed `__Host-` cookie: `HttpOnly; Secure; SameSite=Strict`,
+  14 days. **Sign out** signs out every device.
+- Every state change also needs the header `X-MW: 1` and a JSON body, so another site cannot
+  submit a form at it.
+- The Mac never accepts connections. It polls `GET /mac/poll` with its own token (the Worker
+  only stores the token's SHA-256). While this page is open it pings `/api/watching` and the Mac
+  polls every 2 s instead of 20 s, so **Screenshot now** arrives in seconds.
+- The file list, commands, status and settings live in **D1**; B2 is never listed by the page
+  (B2's free daily list allowance is small). A daily job reconciles D1 with the real bucket.
+- Deleting: **purge** always shows "N files, X MB" first. A cron job every 15 minutes applies
+  `RETENTION_DAYS` and the **storage guard** (above `STORAGE_SOFT_LIMIT_GB`, default 8 GB, the
+  oldest non-Keep days go first). `keep/` is only ever deleted when you delete a kept file by hand.
 
-- Commands are the same Drive "markers" the Mac already understands: `snap-now`, `record-5min`,
-  `pause`, `resume`. The page just creates them for you, so the folder-naming trick is gone from
-  your daily life.
-- **Settings** are written to `control/config.remote`. The Mac accepts **only** a fixed list of
-  numbers inside fixed ranges (screenshot interval, JPEG quality, gaps, retention, record length,
-  keep-awake, ...). It can never change the Drive folder, run a command or add flags. Remove the
-  settings (button on the page, or delete the file) and the Mac returns to `config.env`.
-- **Pause from the page** stops capturing, recording and uploading but keeps the Mac checking
-  Drive so that **Resume** can reach it. The **PAUSE file on the Mac** is stronger: it stops
-  everything, including talking to Drive, and cannot be undone from the page.
-- **Status** (`control/status.json`) is refreshed about every 5 minutes while the Mac is awake with
-  the lid open. If the page says "last seen 40 minutes ago", the Mac is asleep, offline, has the lid
-  shut, or has the PAUSE file. It contains times, counts, battery and error text, never screen
-  content.
-- The token Google gives the page lives in memory for about an hour and is not stored. **Sign out**
-  revokes it. The page asks for the same full-Drive scope as rclone does (see the main README for
-  the trade-off).
-- Only deploy this page from **your own repo**: it holds a Drive-scoped token while open, so its
-  code is as trusted as your Mac's.
+Code: `worker/core.js` (all logic, tested in node), `worker/b2.js` (B2 native API),
+`worker/index.js` (Cloudflare glue), `worker/schema.sql`, `worker/wrangler.toml`. Page:
+`index.html`, `app.js`, `api.js`, `logic.js` (shared with the Worker), `style.css`.
+
+## Secrets (`./worker/put-secrets.sh`, hidden input; never in git)
+
+| Secret | What |
+|---|---|
+| `B2_BUCKET`, `B2_KEY_ID`, `B2_APP_KEY` | the **macwatch-worker** Backblaze key, limited to the bucket (checked with Backblaze before saving) |
+| `ALLOWED_EMAIL` | the only Google account that may sign in |
+| `GOOGLE_CLIENT_ID` | the *Web application* OAuth client (public; origins: the workers.dev URL and `http://localhost:8787`) |
+| `SESSION_SECRET` | random; making a new one signs everyone out |
+| `MAC_TOKEN_HASH` | SHA-256 of the Mac token, printed by `./bin/setup-remote.sh` on the Mac |
+
+`./worker/put-secrets.sh NAME` sets just one. Secrets apply at once, no redeploy needed.
+
+## Deploy (laptop)
+
+```sh
+cd worker
+npm install                 # wrangler, pinned in package-lock.json
+npx wrangler login          # once, browser consent
+npx wrangler d1 execute macwatch --remote --file schema.sql   # once (safe to repeat)
+npx wrangler deploy         # or from the repo root: make deploy
+```
+
+The D1 database id and the cron schedule are in `wrangler.toml`. Logs: `npx wrangler tail`
+(sign-in refusals are logged with the reason only, never the token).
+
+## Free plan limits
+
+Workers: 100,000 requests/day (idle polling is about 4,300). Each request may make about 50
+outgoing calls, so purge and the cron jobs work in batches of 40 and the page repeats until done.
+The **Storage** screen shows today's estimated usage of Worker requests and B2 downloads.

@@ -59,7 +59,7 @@ function eq(a, b, msg) { const s = JSON.stringify(a) === JSON.stringify(b); ok(s
   eq(L.parseShotName("20261113-152800-space.jpg"), { date: "2026-11-13", time: "15:28:00", reason: "space" }, "shot name parsed");
   eq(L.parseShotName("20261113-152800-space-2.jpg").reason, "space", "collision suffix ignored");
   eq(L.parseShotName("junk.jpg"), { date: "", time: "", reason: "" }, "junk name tolerated");
-  eq([L.formatBytes(500), L.formatBytes(2048), L.formatBytes(5 * 1048576), L.formatBytes(3 * 1073741824)], ["500 B", "2 KB", "5.0 MB", "3.00 GB"], "formatBytes");
+  eq([L.formatBytes(500), L.formatBytes(2048), L.formatBytes(5e6), L.formatBytes(10e9)], ["500 B", "2 KB", "5.0 MB", "10.00 GB"], "formatBytes uses decimal units like Backblaze (10 GB free = 10.00 GB)");
   eq(L.parseKey("shots/2026-11-15/a.jpg"), { kind: "shots", day: "2026-11-15", name: "a.jpg" }, "parseKey");
   for (const bad of ["shots/2026-11-15/../a.jpg", "../shots/2026-11-15/a.jpg", "/shots/2026-11-15/a.jpg", "shots/2026-11-15/a b.jpg", "x/2026-11-15/a.jpg", "live/../a.jpg", "shots/2026-11-15/a.exe", null]) {
     ok(L.parseKey(bad) === null, "parseKey refuses " + JSON.stringify(bad));
