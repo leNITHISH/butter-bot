@@ -1,33 +1,16 @@
-/* mac-watch dashboard UI. All data lives in your Google Drive; this page only holds a
-   short-lived Google access token in memory (never in storage). Text from Drive is always
-   written with textContent, never as HTML. */
+/* mac-watch web page. Plain JS, no framework. Text from the server is only ever shown with
+   textContent (never parsed as HTML). Talks to the Worker through api.js. */
 (function () {
   "use strict";
   var L = window.MacWatchLogic;
-  var D = window.MacWatchDrive;
-  var cfg = window.MACWATCH_CONFIG || {};
-  var ROOT = cfg.driveFolder || "mac-watch";
-  var SCOPE = "https://www.googleapis.com/auth/drive";
-
-  var token = null;
-  var tokenClient = null;
-  var drive = D.createDrive({
-    fetch: window.fetch.bind(window),
-    getToken: function () { return token; }
-  });
-  var ids = {};            // control / shots / recordings / keep folder ids
-  var dayFolderId = null;  // folder of the day shown in the screenshot grid
-  var files = [];          // files of that day, newest first
-  var shown = 0;
-  var urls = [];           // object URLs to revoke on re-render
-  var statusTimer = null;
-  var lastStatus = null;
+  var A = window.MacWatchApi;
+  var api = A.makeApi(function (p, o) { return fetch(p, o); });
 
   function $(id) { return document.getElementById(id); }
-  function el(tag, text, cls) {
+  function el(tag, cls, text) {
     var e = document.createElement(tag);
-    if (text !== undefined && text !== null) e.textContent = text;
     if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
     return e;
   }
   function clear(node) { while (node.firstChild) node.removeChild(node.firstChild); }
@@ -40,358 +23,507 @@
     t.className = isError ? "error" : "";
     t.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.hidden = true; }, isError ? 8000 : 3500);
+    toastTimer = setTimeout(function () { t.hidden = true; }, isError ? 6000 : 3000);
+  }
+  function fail(e) {
+    if (e && e.status === 401) { showSignIn(); return; }
+    toast((e && e.message) || "Something went wrong", true);
   }
 
-  // Run an async action; show errors instead of failing silently; go back to sign-in on 401.
-  function guard(fn) {
-    return function () {
-      var args = arguments;
-      return Promise.resolve().then(function () { return fn.apply(null, args); }).catch(function (e) {
-        if (e && e.code === 401) { signedOut("Your Google sign-in expired. Please sign in again."); return; }
-        toast((e && e.message) || String(e), true);
+  function dl(target, rows) {
+    clear(target);
+    rows.forEach(function (r) {
+      if (r[1] === undefined || r[1] === null || r[1] === "") return;
+      target.appendChild(el("dt", "", r[0]));
+      target.appendChild(el("dd", r[2] || "", String(r[1])));
+    });
+  }
+
+  // ------------------------------------------------------------ confirm ---
+  var confirmCb = null;
+  function ask(text, yesLabel, cb) {
+    $("confirm-text").textContent = text;
+    $("confirm-yes").textContent = yesLabel || "Delete";
+    confirmCb = cb;
+    $("confirm").showModal();
+  }
+  $("confirm-yes").addEventListener("click", function () { $("confirm").close(); var c = confirmCb; confirmCb = null; if (c) c(); });
+  $("confirm-no").addEventListener("click", function () { $("confirm").close(); confirmCb = null; });
+
+  // ------------------------------------------------------------ screens ---
+  var SCREENS = ["home", "files", "storage", "settings"];
+  var current = null;
+  var timers = [];
+  function stopTimers() { timers.forEach(clearInterval); timers = []; }
+  function every(ms, fn) { timers.push(setInterval(function () { if (!document.hidden) fn(); }, ms)); }
+
+  function showSignIn() {
+    stopTimers();
+    $("nav").hidden = true;
+    SCREENS.forEach(function (s) { $("screen-" + s).hidden = true; });
+    $("screen-signin").hidden = false;
+    current = "signin";
+    api.config().then(function (cfg) {
+      if (!cfg.configured || !cfg.clientId) {
+        $("signin-msg").textContent = "Sign-in is not set up yet. On the laptop: ./worker/put-secrets.sh (needs the Google Client ID, your e-mail and a session secret).";
+        return;
+      }
+      waitForGoogle(20, function (ok) {
+        if (!ok) { $("signin-msg").textContent = "Could not load Google sign-in. Check the connection and reload."; return; }
+        window.google.accounts.id.initialize({ client_id: cfg.clientId, callback: onCredential, auto_select: true, itp_support: true });
+        clear($("gsi-button"));
+        window.google.accounts.id.renderButton($("gsi-button"), { theme: "outline", size: "large", text: "signin_with" });
+        window.google.accounts.id.prompt();
       });
-    };
+    }).catch(function () { $("signin-msg").textContent = "Cannot reach the server."; });
   }
-
-  // ------------------------------------------------------------------ sign-in
-  function setupProblem() {
-    var id = cfg.clientId || "";
-    if (!id || id.indexOf("PASTE_") === 0) return "This page is not set up yet: put your Google Web client ID into web/config.js (see web/README.md).";
-    if (!window.google || !window.google.accounts) return "Google's sign-in script has not loaded yet. Check your connection and reload.";
-    return "";
+  function waitForGoogle(tries, cb) {
+    if (window.google && window.google.accounts && window.google.accounts.id) return cb(true);
+    if (tries <= 0) return cb(false);
+    setTimeout(function () { waitForGoogle(tries - 1, cb); }, 500);
   }
-
-  function signIn() {
-    var problem = setupProblem();
-    $("setup-msg").hidden = !problem;
-    $("setup-msg").textContent = problem;
-    if (problem) return;
-    if (!tokenClient) {
-      tokenClient = window.google.accounts.oauth2.initTokenClient({
-        client_id: cfg.clientId,
-        scope: SCOPE,
-        callback: function (resp) {
-          if (resp.error || !resp.access_token) { toast("Sign-in failed: " + (resp.error || "no token"), true); return; }
-          token = resp.access_token;
-          start();
-        },
-        error_callback: function (err) { toast("Sign-in cancelled or blocked: " + (err && err.type || "unknown"), true); }
-      });
-    }
-    tokenClient.requestAccessToken({ prompt: "" });
+  function onCredential(resp) {
+    $("signin-msg").textContent = "Checking...";
+    api.signIn(resp.credential).then(function () {
+      $("signin-msg").textContent = "";
+      route();
+    }).catch(function (e) {
+      $("signin-msg").textContent = e.status === 403 ? "This Google account is not allowed." : "Sign-in failed: " + e.message;
+    });
   }
-
-  function signedOut(msg) {
-    token = null;
-    drive.forget();
-    clearInterval(statusTimer);
-    $("app").hidden = true;
-    $("signin").hidden = false;
-    $("signout").hidden = true;
-    if (msg) { $("setup-msg").hidden = false; $("setup-msg").textContent = msg; }
-  }
-
-  function signOut() {
-    var t = token;
-    if (t && window.google && window.google.accounts) window.google.accounts.oauth2.revoke(t, function () {});
-    signedOut("");
-  }
-
-  // ------------------------------------------------------------------ startup
-  var start = guard(function () {
-    $("signin").hidden = true;
-    $("app").hidden = false;
-    $("signout").hidden = false;
-    return Promise.all([
-      drive.folderId(ROOT + "/control", true),
-      drive.folderId(ROOT + "/shots", true),
-      drive.folderId(ROOT + "/recordings", true),
-      drive.folderId(ROOT + "/keep", true)
-    ]).then(function (r) {
-      ids = { control: r[0], shots: r[1], recordings: r[2], keep: r[3] };
-      buildSettingsForm();
-      return Promise.all([refreshStatus(), loadDays(), loadRecordings(), loadSettings()]);
-    }).then(function () {
-      clearInterval(statusTimer);
-      statusTimer = setInterval(function () { if (!document.hidden && token) refreshStatus(); }, 60000);
+  $("btn-signout").addEventListener("click", function () {
+    api.signOut().catch(function () {}).then(function () {
+      if (window.google && window.google.accounts) window.google.accounts.id.disableAutoSelect();
+      showSignIn();
     });
   });
 
-  // ------------------------------------------------------------------- status
-  var refreshStatus = guard(function () {
-    return drive.findChild(ids.control, "status.json").then(function (f) {
-      if (!f) { renderStatus(null); return; }
-      return drive.readText(f.id).then(function (t) {
-        var s = null;
-        try { s = JSON.parse(t); } catch (e) { s = null; }
-        renderStatus(s);
+  function route() {
+    var name = (location.hash || "#home").slice(1);
+    if (SCREENS.indexOf(name) < 0) name = "home";
+    stopTimers();
+    api.status().then(function (st) {
+      $("screen-signin").hidden = true;
+      $("nav").hidden = false;
+      SCREENS.forEach(function (s) {
+        $("screen-" + s).hidden = s !== name;
+        $("nav-" + s).className = s === name ? "active" : "";
       });
-    });
+      current = name;
+      // tell the Mac someone is watching: it polls every 2 s while this is fresh
+      api.watching().catch(function () {});
+      every(30000, function () { api.watching().catch(fail); });
+      if (name === "home") startHome(st);
+      if (name === "files") startFiles();
+      if (name === "storage") startStorage();
+      if (name === "settings") startSettings();
+    }).catch(fail);
+  }
+  window.addEventListener("hashchange", route);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden && current && current !== "signin") api.watching().catch(function () {});
   });
 
-  function row(dl, k, v) { dl.appendChild(el("dt", k)); dl.appendChild(el("dd", v)); }
+  // --------------------------------------------------------------- home ---
+  var lastStatus = null;
+  function startHome(st) {
+    renderStatus(st);
+    loadLatest();
+    loadHomeStorage();
+    every(5000, function () { api.status().then(renderStatus).catch(fail); });
+    every(30000, loadHomeStorage);
+    every(3000, function () { if (lastStatus && lastStatus.live) loadLive(); });
+  }
 
-  function renderStatus(s) {
-    lastStatus = s;
-    var dl = $("status-list");
-    clear(dl);
-    var h = L.statusHealth(s && s.updated, nowSec());
-    $("health-text").textContent = h.text;
-    $("health-dot").className = "dot " + h.level;
-    $("status-errors").hidden = !(s && s.errors);
-    if (s && s.errors) $("status-errors").textContent = "Problems on the Mac: " + s.errors;
-    if (!s) return;
+  function renderStatus(st) {
+    lastStatus = st;
+    var h = L.seenHealth(st.lastSeen, st.now);
+    $("seen-dot").className = "dot " + h.level;
+    $("seen-text").textContent = h.text;
+    var s = st.status || {};
+    var paused = st.macPaused === "remote" ? "paused from this page (press Resume)" :
+                 s.paused === "local" ? "paused with the PAUSE file on the Mac (cannot be lifted from here)" : "no";
     var lc = s.lastCapture || {};
-    row(dl, "Computer", s.host || "?");
-    row(dl, "Lid", s.lid + (s.paused === "no" ? "" : "  (paused: " + (s.paused === "local" ? "PAUSE file on the Mac" : "from here") + ")"));
-    row(dl, "Last shot", lc.epoch ? L.ageString(nowSec() - lc.epoch) + " ago (" + lc.reason + ", " + lc.result + ")" : "none yet");
-    row(dl, "Waiting to upload", String(s.queue));
-    row(dl, "Online", s.online || "?");
-    row(dl, "Power", (s.battery || "?") + ", " + s.power);
-    row(dl, "Up for", s.uptime || "?");
-    row(dl, "Screenshot every", s.intervalSec + " s" + (s.remoteSettings ? "  (" + s.remoteSettings + " setting(s) set from here)" : ""));
-    row(dl, "Spacebar helper", s.hammerspoon === "off" ? "not enabled" : s.hammerspoon);
-    $("cmd-pause").disabled = s.paused === "remote";
-    $("cmd-resume").disabled = s.paused !== "remote";
+    dl($("status-list"), [
+      ["Paused", paused, paused === "no" ? "" : "warn"],
+      ["Lid", s.lid],
+      ["Last shot", lc.epoch ? L.ageString(st.now - lc.epoch) + " ago (" + (lc.reason || "?") + ", " + (lc.result || "?") + ")" : "none yet"],
+      ["Battery", s.battery ? s.battery + " (" + (s.power || "?") + ")" : ""],
+      ["Waiting to upload", s.queue !== undefined ? s.queue + " file(s)" : ""],
+      ["Shot every", s.intervalSec ? s.intervalSec + " s" : ""],
+      ["Status from", s.updated ? L.ageString(st.now - s.updated) + " ago" : ""],
+      ["Polling", st.watching ? "fast (this page is open)" : "normal"],
+      ["Commands waiting", st.pendingCommands ? String(st.pendingCommands) : ""],
+      ["Errors", s.errors || "", "bad"]
+    ]);
+    $("btn-live").textContent = st.live ? "Stop live view" : "Live view";
+    $("live-card").hidden = !st.live;
+    $("btn-pause").disabled = st.macPaused === "remote";
+    $("btn-resume").disabled = st.macPaused !== "remote";
   }
 
-  // ----------------------------------------------------------------- commands
-  var sendCommand = guard(function (kind, label) {
-    var name = L.COMMANDS[kind];
-    return drive.findChild(ids.control, name).then(function (f) {
-      if (f) { toast("That command is already waiting for the Mac."); return; }
-      return drive.createFolder(ids.control, name).then(function () {
-        toast(label + ": sent. The Mac picks it up within about a minute.");
-        if (kind === "snap") watchForNewShot();
-        if (kind === "pause" || kind === "resume") setTimeout(refreshStatus, 90000);
-      });
+  function command(name, msg) {
+    return api.command(name).then(function () { toast(msg); return api.status(); }).then(renderStatus).catch(fail);
+  }
+  $("btn-snap").addEventListener("click", function () {
+    var since = nowSec();
+    command("snap", "Sent. The Mac takes it within a few seconds if it is awake.").then(function () {
+      // look for the new shot for up to 40 s
+      var n = 0;
+      var t = setInterval(function () {
+        n++;
+        loadLatest(since).then(function (found) { if (found || n >= 20) clearInterval(t); });
+      }, 2000);
+    });
+  });
+  $("btn-record").addEventListener("click", function () {
+    ask("Record the screen now? Length: Settings > Recording length (default 5 minutes). macOS shows its recording indicator. Screen only, no sound.", "Record", function () {
+      command("record", "Recording requested. It appears under Files > Recordings when done.");
+    });
+  });
+  $("btn-pause").addEventListener("click", function () { command("pause", "Pause sent."); });
+  $("btn-resume").addEventListener("click", function () { command("resume", "Resume sent."); });
+  $("btn-live").addEventListener("click", function () {
+    var on = !(lastStatus && lastStatus.live);
+    command(on ? "live-on" : "live-off", on ? "Live view on: first frame in a few seconds." : "Live view off.").then(function () {
+      if (on) loadLive();
     });
   });
 
-  // After "Screenshot now", look for the new -remote.jpg for up to 4 minutes.
-  var watching = false;
-  function watchForNewShot() {
-    if (watching) return;
-    watching = true;
-    var before = {};
-    files.forEach(function (f) { before[f.id] = true; });
-    var tries = 0;
-    var timer = setInterval(function () {
-      tries++;
-      if (tries > 30 || !token) { clearInterval(timer); watching = false; return; }
-      guard(function () {
-        return loadDays().then(function () {
-          var fresh = files.filter(function (f) { return !before[f.id] && /-remote(-\d+)?\.jpg$/.test(f.name); });
-          if (fresh.length) { clearInterval(timer); watching = false; toast("New screenshot arrived."); }
-        });
-      })();
-    }, 8000);
+  var liveKey = null;
+  function loadLive() {
+    return api.live().then(function (lv) {
+      if (lv && lv.key && lv.key !== liveKey) {
+        liveKey = lv.key;
+        $("live-img").src = api.imgUrl(lv.key);
+      }
+      $("live-meta").textContent = lv && lv.taken ? "Frame from " + L.ageString(nowSec() - lv.taken) + " ago" : "Waiting for the first frame...";
+    }).catch(fail);
   }
 
-  // ------------------------------------------------------------- screenshots
-  var loadDays = guard(function () {
-    return drive.list(ids.shots, "mimeType = '" + D.FOLDER + "'", { orderBy: "name desc", pageSize: 60 }).then(function (days) {
-      var sel = $("day-select");
-      var keepSel = sel.value;
-      clear(sel);
-      days.forEach(function (d) { var o = el("option", d.name); o.value = d.id; sel.appendChild(o); });
-      if (!days.length) { dayFolderId = null; files = []; renderGrid(); return; }
-      if (keepSel && days.some(function (d) { return d.id === keepSel; })) sel.value = keepSel;
-      return loadDay(sel.value);
-    });
-  });
-
-  function loadDay(folderId) {
-    dayFolderId = folderId;
-    return drive.list(folderId, "mimeType != '" + D.FOLDER + "'", { orderBy: "name desc", pageSize: 200 }).then(function (f) {
-      files = f;
-      shown = 0;
-      renderGrid();
-    });
-  }
-
-  function revokeUrls() { urls.forEach(function (u) { URL.revokeObjectURL(u); }); urls = []; }
-
-  function renderGrid() {
-    revokeUrls();
-    var grid = $("grid");
-    clear(grid);
-    $("grid-empty").hidden = files.length > 0;
-    shown = 0;
-    showMore();
-  }
-
-  var queue = [], active = 0;
-  function loadThumb(file, img) {
-    queue.push(function (done) {
-      drive.readBlob(file.id).then(function (b) {
-        var u = URL.createObjectURL(b); urls.push(u); img.src = u;
-      }).catch(function () {}).then(done);
-    });
-    pump();
-  }
-  function pump() {
-    while (active < 4 && queue.length) {
-      active++;
-      queue.shift()(function () { active--; pump(); });
-    }
-  }
-
-  function showMore() {
-    var grid = $("grid");
-    var next = files.slice(shown, shown + 24);
-    next.forEach(function (f) {
-      var info = L.parseShotName(f.name);
-      var b = el("button", null, "thumb");
-      b.type = "button";
-      b.setAttribute("aria-label", "Open screenshot from " + (info.time || f.name) + ", reason " + (info.reason || "unknown"));
-      var img = document.createElement("img");
-      img.alt = "";
-      b.appendChild(img);
-      b.appendChild(el("span", (info.time || f.name) + "  " + info.reason));
-      b.addEventListener("click", function () { openViewer(f, "image"); });
-      grid.appendChild(b);
-      loadThumb(f, img);
-    });
-    shown += next.length;
-    $("grid-more").hidden = shown >= files.length;
-  }
-
-  // ------------------------------------------------------------------ viewer
-  var viewing = null;
-  var viewerUrl = null;
-
-  function openViewer(file, kind, parentId) {
-    viewing = { file: file, parent: parentId || dayFolderId };
-    var body = $("viewer-body");
-    clear(body);
-    $("viewer-meta").textContent = file.name + (file.size ? "  (" + L.formatBytes(file.size) + ")" : "");
-    $("viewer-download").removeAttribute("href");
-    $("viewer").showModal();
-    if (kind === "video" && Number(file.size) > 100 * 1048576 &&
-        !window.confirm("This recording is " + L.formatBytes(file.size) + ". Load it?")) { $("viewer").close(); return; }
-    guard(function () {
-      return drive.readBlob(file.id).then(function (blob) {
-        if (viewerUrl) URL.revokeObjectURL(viewerUrl);
-        viewerUrl = URL.createObjectURL(blob);
-        var m = kind === "video" ? document.createElement("video") : document.createElement("img");
-        if (kind === "video") { m.controls = true; m.playsInline = true; } else { m.alt = file.name; }
-        m.src = viewerUrl;
-        body.appendChild(m);
-        var a = $("viewer-download");
-        a.href = viewerUrl;
-        a.download = file.name;
+  var latestKey = null;
+  function loadLatest(since) {
+    return api.days("shots").then(function (d) {
+      if (!d.days.length) { $("latest-meta").textContent = "No screenshots yet."; return false; }
+      return api.files("shots", d.days[0].day, "", 1).then(function (f) {
+        var x = f.files[0];
+        if (!x) return false;
+        if (x.key !== latestKey) {
+          latestKey = x.key;
+          $("latest-img").src = api.imgUrl(x.key);
+          $("latest-open").hidden = false;
+          $("latest-open").onclick = function () { openViewer(x); };
+        }
+        var p = L.parseShotName(x.name);
+        $("latest-meta").textContent = p.date + " " + p.time + " · " + p.reason + " · " + L.formatBytes(x.bytes);
+        return !since || x.uploaded >= since;
       });
-    })();
+    }).catch(function (e) { fail(e); return false; });
   }
 
-  var keepCurrent = guard(function () {
-    if (!viewing) return;
-    var info = L.parseShotName(viewing.file.name);
-    var day = info.date || "unsorted";
-    return drive.folderId(ROOT + "/keep/" + day, true).then(function (kid) {
-      return drive.move(viewing.file.id, viewing.parent, kid).then(function () {
-        toast("Moved to keep/" + day + " (never auto-deleted).");
-        $("viewer").close();
-        files = files.filter(function (f) { return f.id !== viewing.file.id; });
-        renderGrid();
-        loadRecordings();
-      });
-    });
-  });
+  function meter(bar, s) {
+    bar.style.width = Math.min(100, Math.round(s.fraction * 1000) / 10) + "%";
+    bar.className = s.level;
+  }
+  function loadHomeStorage() {
+    return api.storage().then(function (s) {
+      meter($("home-meter-bar"), s);
+      $("home-storage-text").textContent = L.formatBytes(s.usedBytes) + " of " + L.formatBytes(s.freeBytes) + " free allowance" +
+        (s.daysUntilSoftLimit !== null ? " · about " + s.daysUntilSoftLimit + " days until the guard starts deleting" : "");
+    }).catch(fail);
+  }
 
-  // -------------------------------------------------------------- recordings
-  var loadRecordings = guard(function () {
-    return drive.list(ids.recordings, "mimeType = '" + D.FOLDER + "'", { orderBy: "name desc", pageSize: 3 }).then(function (days) {
-      var ul = $("rec-list");
+  // -------------------------------------------------------------- files ---
+  var F = { root: "shots", day: null, next: null, selecting: false, selected: {}, items: [] };
+
+  function startFiles() { showRoot(F.root); }
+  ["shots", "recordings", "keep"].forEach(function (k) {
+    $("root-" + k).addEventListener("click", function () { showRoot(k); });
+  });
+  $("btn-files-up").addEventListener("click", function () { showRoot(F.root); });
+
+  function setTabs() {
+    ["shots", "recordings", "keep"].forEach(function (k) { $("root-" + k).className = k === F.root ? "active" : ""; });
+  }
+  function endSelect() {
+    F.selecting = false; F.selected = {};
+    $("select-bar").hidden = true;
+    $("btn-select").textContent = "Select";
+    Array.prototype.forEach.call(document.querySelectorAll(".thumb.selected"), function (n) { n.classList.remove("selected"); });
+  }
+
+  function showRoot(kind) {
+    F.root = kind; F.day = null; F.next = null; endSelect(); setTabs();
+    $("btn-files-up").hidden = true;
+    $("day-tools").hidden = true;
+    $("btn-more").hidden = true;
+    clear($("files-grid"));
+    $("files-path").textContent = { shots: "Screenshots", recordings: "Recordings", keep: "Keep (never deleted automatically)" }[kind];
+    $("files-msg").textContent = "Loading...";
+    api.days(kind).then(function (d) {
+      var ul = $("days-list");
       clear(ul);
-      return Promise.all(days.map(function (d) {
-        return drive.list(d.id, "mimeType != '" + D.FOLDER + "'", { orderBy: "name desc", pageSize: 20 }).then(function (fs) {
-          return { day: d, files: fs };
-        });
-      })).then(function (groups) {
-        var count = 0;
-        groups.forEach(function (g) {
-          g.files.forEach(function (f) {
-            count++;
-            var li = document.createElement("li");
-            li.appendChild(el("span", f.name + "  (" + L.formatBytes(f.size) + ")"));
-            var play = el("button", "Play"); play.type = "button";
-            play.addEventListener("click", function () { openViewer(f, "video", g.day.id); });
-            li.appendChild(play);
-            ul.appendChild(li);
-          });
-        });
-        $("rec-empty").hidden = count > 0;
+      $("files-msg").textContent = d.days.length ? "" : "Nothing here yet.";
+      d.days.forEach(function (x) {
+        var li = el("li");
+        var b = el("button", "day-button", x.day);
+        b.type = "button";
+        b.addEventListener("click", function () { showDay(x.day); });
+        li.appendChild(b);
+        li.appendChild(el("span", "small", x.files + " file(s) · " + L.formatBytes(x.bytes)));
+        ul.appendChild(li);
       });
-    });
-  });
-
-  // ---------------------------------------------------------------- settings
-  function buildSettingsForm() {
-    var form = $("settings-form");
-    clear(form);
-    L.SETTINGS.forEach(function (s) {
-      var label = el("label", s.label);
-      label.setAttribute("for", "set-" + s.key);
-      var input = document.createElement("input");
-      input.type = "number"; input.id = "set-" + s.key; input.min = s.min; input.max = s.max; input.step = 1;
-      input.inputMode = "numeric"; input.placeholder = "Mac default";
-      form.appendChild(label);
-      form.appendChild(input);
-      form.appendChild(el("p", "Allowed: " + s.min + " to " + s.max + (s.help ? ". " + s.help : ""), "small"));
-    });
-    form.addEventListener("submit", function (e) { e.preventDefault(); });
+    }).catch(fail);
   }
 
-  var loadSettings = guard(function () {
-    return drive.findChild(ids.control, "config.remote").then(function (f) {
-      var vals = {};
-      var p = f ? drive.readText(f.id).then(function (t) { vals = L.parseConfig(t); }) : Promise.resolve();
-      return p.then(function () {
-        L.SETTINGS.forEach(function (s) { $("set-" + s.key).value = vals[s.key] === undefined ? "" : vals[s.key]; });
+  function showDay(day) {
+    F.day = day; F.next = null; F.items = []; endSelect();
+    clear($("days-list"));
+    clear($("files-grid"));
+    $("btn-files-up").hidden = false;
+    $("day-tools").hidden = F.root === "keep";
+    $("files-path").textContent = day;
+    loadMore();
+  }
+  $("btn-more").addEventListener("click", loadMore);
+
+  function loadMore() {
+    $("files-msg").textContent = "Loading...";
+    api.files(F.root, F.day, F.next, 60).then(function (f) {
+      F.next = f.next;
+      $("btn-more").hidden = !f.next;
+      $("files-msg").textContent = "";
+      f.files.forEach(addTile);
+    }).catch(fail);
+  }
+
+  function addTile(x) {
+    F.items.push(x);
+    var p = L.parseShotName(x.name);
+    var b = el("button", "thumb");
+    b.type = "button";
+    b.setAttribute("data-key", x.key);
+    if (/\.mov$/.test(x.name)) {
+      b.appendChild(el("span", "video-label", "Recording " + L.formatBytes(x.bytes)));
+    } else {
+      var img = el("img");
+      img.loading = "lazy";
+      img.alt = x.name;
+      img.src = api.imgUrl(x.thumb || x.key);
+      b.appendChild(img);
+    }
+    b.appendChild(el("span", "", (p.time || x.name) + (p.reason ? " · " + p.reason : "")));
+    var pressTimer = null, longPressed = false;
+    b.addEventListener("pointerdown", function () {
+      longPressed = false;
+      pressTimer = setTimeout(function () { longPressed = true; startSelect(); toggle(b, x); }, 550);
+    });
+    ["pointerup", "pointerleave", "pointercancel"].forEach(function (ev) { b.addEventListener(ev, function () { clearTimeout(pressTimer); }); });
+    b.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+    b.addEventListener("click", function () {
+      if (longPressed) { longPressed = false; return; }
+      if (F.selecting) toggle(b, x); else openViewer(x);
+    });
+    $("files-grid").appendChild(b);
+  }
+
+  function startSelect() {
+    F.selecting = true;
+    $("select-bar").hidden = false;
+    $("btn-select").textContent = "Done";
+    $("btn-sel-keep").hidden = F.root === "keep";
+    updateSelCount();
+  }
+  function toggle(node, x) {
+    if (F.selected[x.key]) { delete F.selected[x.key]; node.classList.remove("selected"); }
+    else { F.selected[x.key] = x; node.classList.add("selected"); }
+    updateSelCount();
+  }
+  function selectedList() { return Object.keys(F.selected).map(function (k) { return F.selected[k]; }); }
+  function updateSelCount() { $("select-count").textContent = selectedList().length + " selected"; }
+  $("btn-select").addEventListener("click", function () { if (F.selecting) endSelect(); else startSelect(); });
+  $("btn-sel-cancel").addEventListener("click", endSelect);
+
+  $("btn-sel-download").addEventListener("click", function () {
+    var list = selectedList();
+    if (!list.length) return;
+    // one at a time through the browser (no server-side zip)
+    list.forEach(function (x, i) {
+      setTimeout(function () {
+        var a = el("a"); a.href = api.dlUrl(x.key); a.download = x.name;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      }, i * 900);
+    });
+    toast("Downloading " + list.length + " file(s), one by one.");
+  });
+  $("btn-sel-keep").addEventListener("click", function () {
+    var keys = selectedList().map(function (x) { return x.key; });
+    if (!keys.length) return;
+    keepKeys(keys).then(function () { endSelect(); showDay(F.day); });
+  });
+  $("btn-sel-delete").addEventListener("click", function () {
+    var keys = selectedList().map(function (x) { return x.key; });
+    if (!keys.length) return;
+    purgeFlow({ mode: "keys", keys: keys }, function () { endSelect(); showDay(F.day); });
+  });
+
+  function keepKeys(keys) {
+    var chunks = [];
+    for (var i = 0; i < keys.length; i += 10) chunks.push(keys.slice(i, i + 10));
+    var kept = 0, failed = 0;
+    return chunks.reduce(function (p, c) {
+      return p.then(function () { return api.keep(c).then(function (r) { kept += r.kept.length; failed += r.failed.length; }); });
+    }, Promise.resolve()).then(function () {
+      toast("Kept " + kept + (failed ? ", " + failed + " failed (try again)" : "") + ". Find them under Keep.", failed > 0);
+    }).catch(fail);
+  }
+
+  // dry run -> confirm with the numbers -> delete in batches until done
+  function purgeFlow(body, done) {
+    var dry = Object.assign({}, body, { dryRun: true });
+    api.purge(dry).then(function (r) {
+      if (!r.files) { toast("Nothing to delete."); return; }
+      ask("Delete " + r.files + " file(s), " + L.formatBytes(r.bytes) + "? This cannot be undone.", "Delete", function () {
+        var total = 0;
+        var step = function () {
+          return api.purge(Object.assign({}, body, { dryRun: false })).then(function (x) {
+            total += x.deleted;
+            $("purge-msg").textContent = "Deleted " + total + " of " + r.files + "...";
+            if (x.more && x.deleted > 0) return step();
+          });
+        };
+        step().then(function () {
+          $("purge-msg").textContent = "Deleted " + total + " file(s).";
+          toast("Deleted " + total + " file(s).");
+          if (done) done();
+        }).catch(fail);
       });
-    });
+    }).catch(fail);
+  }
+  $("btn-purge-day").addEventListener("click", function () {
+    if (!F.day) return;
+    purgeFlow({ mode: "day", day: F.day, kinds: F.root === "recordings" ? ["recordings"] : ["shots"] }, function () { showRoot(F.root); });
+  });
+  $("btn-purge-preview").addEventListener("click", function () {
+    var d = parseInt($("purge-days").value, 10);
+    if (!(d >= 1 && d <= 3650)) { toast("Enter a number of days from 1 to 3650.", true); return; }
+    purgeFlow({ mode: "olderThanDays", days: d }, function () { showRoot(F.root); });
   });
 
-  var saveSettings = guard(function () {
-    var values = {};
-    L.SETTINGS.forEach(function (s) { values[s.key] = $("set-" + s.key).value; });
-    var res = L.buildConfig(values);
-    $("settings-errors").hidden = res.errors.length === 0;
-    $("settings-errors").textContent = res.errors.join(". ");
-    if (res.errors.length) return;
-    return drive.writeText(ids.control, "config.remote", res.text).then(function () {
-      toast("Saved. The Mac applies it within about a minute.");
-      setTimeout(refreshStatus, 90000);
-    });
+  // ------------------------------------------------------------- viewer ---
+  var viewing = null;
+  function openViewer(x) {
+    viewing = x;
+    var isVideo = /\.mov$/.test(x.name);
+    var img = $("viewer-img"), vid = $("viewer-video");
+    img.hidden = isVideo; vid.hidden = !isVideo;
+    if (isVideo) { img.removeAttribute("src"); vid.src = api.imgUrl(x.key); }
+    else { vid.removeAttribute("src"); img.src = api.imgUrl(x.key); img.alt = x.name; }
+    var p = L.parseShotName(x.name);
+    $("viewer-meta").textContent = (p.date ? p.date + " " + p.time + " · " + p.reason + " · " : x.name + " · ") + L.formatBytes(x.bytes);
+    $("viewer-download").href = api.dlUrl(x.key);
+    $("viewer-download").setAttribute("download", x.name);
+    $("viewer-keep").hidden = !/^(shots|recordings)\//.test(x.key);
+    $("viewer").showModal();
+  }
+  function closeViewer() { $("viewer-video").pause(); $("viewer").close(); }
+  $("viewer-close").addEventListener("click", closeViewer);
+  $("viewer-keep").addEventListener("click", function () {
+    if (!viewing) return;
+    keepKeys([viewing.key]).then(function () { closeViewer(); if (F.day) showDay(F.day); });
+  });
+  $("viewer-delete").addEventListener("click", function () {
+    if (!viewing) return;
+    var x = viewing;
+    closeViewer();
+    purgeFlow({ mode: "keys", keys: [x.key] }, function () { if (F.day) showDay(F.day); loadLatest(); });
   });
 
-  var resetSettings = guard(function () {
-    if (!window.confirm("Remove all settings made here and use the Mac's own config.env?")) return;
-    return drive.findChild(ids.control, "config.remote").then(function (f) {
-      return f ? drive.remove(f.id) : null;
-    }).then(function () { return loadSettings(); }).then(function () { toast("Removed. The Mac goes back to config.env within about a minute."); });
+  // ------------------------------------------------------------ storage ---
+  function startStorage() {
+    loadStorage();
+    every(30000, loadStorage);
+  }
+  function loadStorage() {
+    return api.storage().then(function (s) {
+      meter($("storage-meter-bar"), s);
+      $("storage-used").textContent = L.formatBytes(s.usedBytes) + " used of " + L.formatBytes(s.freeBytes) +
+        " (" + Math.round(s.fraction * 100) + " %)";
+      $("storage-growth").textContent = "Growing about " + L.formatBytes(s.avgPerDay) + " per day (last 7 days). " +
+        (s.daysUntilSoftLimit !== null ? "At that rate the storage guard (" + L.formatBytes(s.softLimitBytes) + ") starts deleting the oldest days in about " + s.daysUntilSoftLimit + " days." : "");
+      dl($("storage-kinds"), ["shots", "thumbs", "recordings", "keep", "live"].map(function (k) {
+        var x = s.byKind[k] || { files: 0, bytes: 0 };
+        return [k, x.files + " file(s) · " + L.formatBytes(x.bytes)];
+      }));
+      var bars = $("storage-days");
+      clear(bars);
+      var max = Math.max.apply(null, s.perDay.map(function (x) { return x.bytes; }).concat([1]));
+      s.perDay.forEach(function (x) {
+        var row = el("div", "bar-row");
+        row.appendChild(el("span", "bar-label", x.day.slice(5)));
+        var track = el("span", "bar-track");
+        var fill = el("span", "bar-fill");
+        fill.style.width = Math.round(x.bytes / max * 100) + "%";
+        track.appendChild(fill);
+        row.appendChild(track);
+        row.appendChild(el("span", "bar-value", L.formatBytes(x.bytes)));
+        bars.appendChild(row);
+      });
+      var m = s.mac || {};
+      dl($("storage-mac"), [
+        ["Free disk", m.diskFreeGB !== null && m.diskFreeGB !== undefined ? m.diskFreeGB + " GB" : "unknown"],
+        ["Waiting to upload", m.queueFiles !== null && m.queueFiles !== undefined ? m.queueFiles + " file(s), " + m.queueMB + " MB" : "unknown"],
+        ["As of", m.updated ? L.ageString(s.now - m.updated) + " ago" : "no status yet"]
+      ]);
+      var u = s.usage;
+      var lvl = function (a, b) { return a / b >= 0.8 ? "warn" : ""; };
+      dl($("storage-usage"), [
+        ["Worker requests", "about " + u.workerRequests + " of " + u.workerLimit, lvl(u.workerRequests, u.workerLimit)],
+        ["B2 downloads", "about " + u.b2Downloads + " of " + u.b2DownloadLimit, lvl(u.b2Downloads, u.b2DownloadLimit)]
+      ]);
+      var notes = [];
+      if (s.guard) notes.push("Storage guard last deleted " + s.guard.deleted + " file(s) (" + s.guard.days.join(", ") + ").");
+      if (s.reconcile) notes.push("Checked against Backblaze " + L.ageString(s.now - s.reconcile.t) + " ago: " + s.reconcile.files + " file(s)" + (s.reconcile.complete ? "" : " (partial)") + ".");
+      notes.push("Counters are sampled estimates.");
+      $("storage-notes").textContent = notes.join(" ");
+    }).catch(fail);
+  }
+
+  // ----------------------------------------------------------- settings ---
+  function startSettings() {
+    api.settings().then(function (r) {
+      var box = $("settings-fields");
+      clear(box);
+      r.table.forEach(function (s) {
+        var id = "set-" + s.key;
+        var lab = el("label", "", s.label);
+        lab.htmlFor = id;
+        var inp = el("input");
+        inp.id = id; inp.type = "number"; inp.min = s.min; inp.max = s.max; inp.step = 1; inp.inputMode = "numeric";
+        inp.placeholder = "default " + s.def;
+        if (Object.prototype.hasOwnProperty.call(r.values, s.key)) inp.value = r.values[s.key];
+        box.appendChild(lab);
+        box.appendChild(inp);
+        box.appendChild(el("p", "small", s.min + " to " + s.max + (s.help ? ". " + s.help : "") + (s.worker ? " (on the server)" : "")));
+      });
+    }).catch(fail);
+  }
+  function collect() {
+    var v = {};
+    L.SETTINGS.forEach(function (s) { var i = $("set-" + s.key); if (i && i.value !== "") v[s.key] = i.value; });
+    return v;
+  }
+  $("settings-form").addEventListener("submit", function (e) {
+    e.preventDefault();
+    var local = L.validateSettings(collect());
+    if (local.errors.length) { $("settings-msg").textContent = local.errors.join("; "); return; }
+    api.saveSettings(local.values).then(function () {
+      $("settings-msg").textContent = "Saved. The Mac picks it up within 20 seconds (2 while this page is open).";
+    }).catch(function (e2) { $("settings-msg").textContent = (e2.details && e2.details.join("; ")) || e2.message; });
+  });
+  $("btn-settings-reset").addEventListener("click", function () {
+    api.saveSettings({}).then(function () { startSettings(); $("settings-msg").textContent = "Cleared: the Mac uses its config.env again."; }).catch(fail);
   });
 
-  // ------------------------------------------------------------------- wiring
-  $("signin-btn").addEventListener("click", signIn);
-  $("signout").addEventListener("click", signOut);
-  $("status-refresh").addEventListener("click", refreshStatus);
-  $("cmd-snap").addEventListener("click", function () { sendCommand("snap", "Screenshot"); });
-  $("cmd-record").addEventListener("click", function () { sendCommand("record", "Recording"); });
-  $("cmd-pause").addEventListener("click", function () { sendCommand("pause", "Pause"); });
-  $("cmd-resume").addEventListener("click", function () { sendCommand("resume", "Resume"); });
-  $("day-select").addEventListener("change", guard(function () { return loadDay($("day-select").value); }));
-  $("grid-more").addEventListener("click", showMore);
-  $("settings-save").addEventListener("click", saveSettings);
-  $("settings-reset").addEventListener("click", resetSettings);
-  $("viewer-keep").addEventListener("click", keepCurrent);
-  $("viewer-close").addEventListener("click", function () { $("viewer").close(); });
-  $("viewer").addEventListener("close", function () {
-    clear($("viewer-body"));
-    if (viewerUrl) { URL.revokeObjectURL(viewerUrl); viewerUrl = null; }
-  });
-  window.addEventListener("load", function () { var p = setupProblem(); if (p && /not set up/.test(p)) { $("setup-msg").hidden = false; $("setup-msg").textContent = p; } });
+  route();
 })();
