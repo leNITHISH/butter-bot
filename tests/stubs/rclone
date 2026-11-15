@@ -1,13 +1,13 @@
 #!/bin/sh
-# Fake rclone: "remote:path" maps to $STUB_RCLONE_ROOT/path. Enough of move, lsf,
-# delete, deletefile, purge, rmdirs, mkdir for mac-watch. Never touches the network.
+# Fake rclone: "remote:path" maps to $STUB_RCLONE_ROOT/path. Enough of move, copyto, lsf,
+# delete, deletefile, purge, rmdirs, mkdir, obscure for mac-watch. Never touches the network.
 echo "rclone $*" >> "$STUB_DIR/rclone_calls"
 if [ -s "$STUB_DIR/rclone_fail" ]; then
   code=$(cut -d'|' -f1 < "$STUB_DIR/rclone_fail"); msg=$(cut -d'|' -f2- < "$STUB_DIR/rclone_fail")
   echo "$msg" >&2; exit "$code"
 fi
 ROOT=$STUB_RCLONE_ROOT
-cmd=; mindays=; include=; dels=0; leave=0; rec=0
+cmd=; mindays=; include=; includes=; dels=0; leave=0; rec=0
 pos_file=$STUB_DIR/.pos.$$; : > "$pos_file"
 while [ $# -gt 0 ]; do
   case $1 in
@@ -15,13 +15,14 @@ while [ $# -gt 0 ]; do
     -R) rec=1 ;;
     --contimeout|--timeout|--retries|--low-level-retries|--format|--min-age|--include|--max-depth)
       case $1 in
-        --min-age) mindays=${2%d} ;;
-        --include) include=$2 ;;
+        --min-age) case $2 in *d) mindays=${2%d} ;; *) mindays=0 ;; esac ;;
+        --include) include=$2; _i=${2#/}; includes="$includes ${_i%\*\*}" ;;
       esac
       shift ;;
     --delete-empty-src-dirs) dels=1 ;;
     --leave-root) leave=1 ;;
-    --drive-use-trash=false) ;;
+    --drive-use-trash=false|--no-check-dest|--b2-hard-delete) ;;
+    -) printf '%s\n' "$1" >> "$pos_file" ;;
     -*) ;;
     *) if [ -z "$cmd" ]; then cmd=$1; else printf '%s\n' "$1" >> "$pos_file"; fi ;;
   esac
@@ -36,8 +37,9 @@ if [ -e "$STUB_DIR/rclone_nodelete" ]; then
 fi
 case $cmd in
   version) echo "rclone v0.0-stub" ;;
-  listremotes) printf '%s\n' "${STUB_REMOTES:-gdrive:}" ;;
-  config) echo "$STUB_DIR/rclone.conf" ;;
+  listremotes) printf '%s\n' "${STUB_REMOTES:-b2:}" ;;
+  config) echo "Configuration file is stored at:"; echo "$STUB_DIR/rclone.conf" ;;
+  obscure) [ "$p1" = - ] && { printf 'OBSCURED-'; od -An -tx1 | tr -d ' \n'; echo; } ;;
   lsd) exit 0 ;;
   mkdir) mkdir -p "$(rmap "$p1")" ;;
   move)
@@ -45,6 +47,11 @@ case $cmd in
     [ -d "$src" ] || exit 3
     find "$src" -type f | while IFS= read -r f; do
       rel=${f#"$src"/}
+      if [ -n "$includes" ]; then
+        hit=0
+        for i in $includes; do case $rel in "$i"*) hit=1 ;; esac; done
+        [ "$hit" = 1 ] || continue
+      fi
       mkdir -p "$dst/$(dirname "$rel")"
       mv "$f" "$dst/$rel"
     done

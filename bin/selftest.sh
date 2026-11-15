@@ -6,6 +6,8 @@
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
+# shellcheck source=api.sh
+. "$MW_BIN/api.sh"
 mw_init selftest
 
 AUTO=${SELFTEST_AUTO:-0}
@@ -109,11 +111,11 @@ case $(cat "$MW_STATE/last-capture" 2>/dev/null) in
   *) fail "no capture after removing PAUSE" "$(cut -d' ' -f2- "$MW_STATE/error-capture" 2>/dev/null) (lid closed? see log/capture.log)" ;;
 esac
 
-step "6. Google Drive login"
+step "6. Backblaze B2"
 if ! command -v rclone >/dev/null 2>&1; then
   skip "rclone not installed"
-elif rc lsd "$RCLONE_REMOTE:" --max-depth 0 >/dev/null 2> "$MW_TMP/lsd.err"; then
-  pass "rclone remote '$RCLONE_REMOTE' can reach Drive"
+elif rc lsf "$(rpath '')" --max-depth 1 >/dev/null 2> "$MW_TMP/lsd.err"; then
+  pass "rclone remote '$RCLONE_REMOTE' can list bucket $B2_BUCKET"
   cfg=$(rclone config file 2>/dev/null | tail -n 1)
   if [ -f "$cfg" ]; then
     case $(ls -l "$cfg" | awk '{print $1}') in
@@ -121,66 +123,65 @@ elif rc lsd "$RCLONE_REMOTE:" --max-depth 0 >/dev/null 2> "$MW_TMP/lsd.err"; the
       *) fail "rclone config is readable by others" "run: chmod 600 \"$cfg\"" ;;
     esac
   fi
-  note=selftest-$(date +%H%M%S).txt
-  echo "mac-watch selftest" > "$MW_TMP/$note"
-  if rc copyto "$MW_TMP/$note" "$(rpath control)/$note" 2>/dev/null && rc deletefile "$(rpath control)/$note" --drive-use-trash=false 2>/dev/null; then
-    pass "write + delete in Drive $DRIVE_FOLDER/control/ works"
-  else
-    fail "could not write/delete in Drive $DRIVE_FOLDER/control/" "run: rclone config reconnect $RCLONE_REMOTE:"
-  fi
-  rm -f "${MW_TMP:?}/${note:?}"
-elif grep -qi 'ratelimit\|rate limit' "$MW_TMP/lsd.err" 2>/dev/null; then
-  fail "Google Drive is rate-limiting rclone's shared client ID" "this is the known risk: run ./bin/setup-oauth.sh to use your own Google client (free, ~10 min, see README)"
 else
-  fail "rclone cannot reach Drive with remote '$RCLONE_REMOTE'" "run ./bin/setup-drive.sh (or: rclone config reconnect $RCLONE_REMOTE:)"
+  fail "rclone cannot reach bucket $B2_BUCKET with remote '$RCLONE_REMOTE'" "run ./bin/setup-remote.sh; $(tail -n 1 "$MW_TMP/lsd.err" | redact)"
 fi
 rm -f "${MW_TMP:?}/lsd.err"
 
-step "7. upload of the real shots"
+step "7. the Worker (web page connection)"
+if ! api_configured; then
+  fail "no Mac token or WORKER_URL" "run ./bin/setup-remote.sh"
+elif api GET "/mac/poll?paused=no" "$MW_TMP/poll.st"; then
+  pass "the Worker accepts this Mac's token ($WORKER_URL)"
+  case $(ls -l "$MW_TOKEN_FILE" | awk '{print $1}') in
+    -rw-------*) pass ".mac-token is chmod 600" ;;
+    *) fail ".mac-token is readable by others" "run: chmod 600 \"$MW_TOKEN_FILE\"" ;;
+  esac
+else
+  fail "the Worker did not accept the poll (HTTP $API_CODE)" "$(api_problem "$API_CODE")"
+fi
+rm -f "${MW_TMP:?}/poll.st"
+
+step "8. upload of the real shots, and the web page sees them"
 if command -v rclone >/dev/null 2>&1 && is_online; then
-  "$MW_BIN/upload.sh"
-  [ "$AUTO" = 1 ] || sleep 16   # rclone only moves files that are 15 s old
-  "$MW_BIN/upload.sh"
+  "$MW_BIN/upload.sh" --now
   left=$(queue_count)
   if [ "$left" = 0 ]; then pass "queue is empty after upload"; else fail "$left file(s) still queued" "see ./bin/status.sh and log/upload.log"; fi
   if [ -f "$MW_STATE/error-upload" ]; then fail "upload error flag is set" "$(cut -d' ' -f2- "$MW_STATE/error-upload")"; fi
+  if [ -s "$MW_STATE/index-pending" ]; then fail "uploaded files were not reported to the Worker" "see log/upload.log"; else pass "the Worker knows about the uploaded files"; fi
 else
   skip "offline or no rclone"
 fi
 
-step "8. phone marker round trip (snap-now)"
-if command -v rclone >/dev/null 2>&1 && is_online && rc lsd "$RCLONE_REMOTE:" --max-depth 0 >/dev/null 2>&1; then
-  count_remote() { rc lsf -R "$(rpath shots)" 2>/dev/null | grep -c -- '-remote\.jpg'; }
-  b=$(count_remote)
-  rc mkdir "$(rpath control)/snap-now" 2>/dev/null
-  info "Created the folder control/snap-now in Drive (like your phone would)."
-  if [ "$AUTO" = 1 ]; then
-    "$MW_BIN/upload.sh"; wait_s=5
-  else
-    wait_s=$((CONTROL_POLL_SEC * 2 + 60))
-    info "Waiting up to ${wait_s}s for the upload agent to notice it..."
-  fi
+step "8b. Screenshot now from the web page (round trip)"
+if [ "$AUTO" = 1 ] || ! api_configured; then
+  skip "needs you and the web page"
+elif ask "Open $WORKER_URL on your phone, sign in, and keep it open. Ready?"; then
+  rm -f "${MW_STATE:?}/last-trigger-remote"
+  before=$(cat "$MW_STATE/last-capture" 2>/dev/null)
+  info "Now press 'Screenshot now' on the phone. Waiting up to 90 s..."
   i=0; got=0
-  while [ "$i" -lt "$wait_s" ]; do
-    a=$(count_remote)
-    if [ "${a:-0}" -gt "${b:-0}" ]; then got=1; break; fi
-    sleep 3; i=$((i + 3))
+  while [ "$i" -lt 90 ]; do
+    case $(cat "$MW_STATE/last-capture" 2>/dev/null) in
+      "$before") ;;
+      *'|remote|'*) got=1; break ;;
+    esac
+    sleep 2; i=$((i + 2))
   done
-  if [ "$got" = 1 ]; then pass "snap-now produced a *-remote.jpg in Drive after about ${i}s"; else fail "no remote shot appeared" "is com.macwatch.upload loaded? see log/upload.log"; fi
-  if rc lsf "$(rpath control)" 2>/dev/null | grep -qi '^snap-now'; then
-    fail "marker was not deleted from Drive control/"
-    rc purge "$(rpath control)/snap-now" --drive-use-trash=false 2>/dev/null
+  if [ "$got" = 1 ]; then
+    pass "Screenshot now reached the Mac after about ${i}s"
+    if ask "Did the new screenshot show up on the phone within about 10 s more?"; then pass "round trip works"; else fail "shot taken but not shown" "see log/upload.log and log/listen.log"; fi
   else
-    pass "marker was deleted by mac-watch"
+    fail "no remote shot within 90 s" "is com.macwatch.listen loaded (./bin/status.sh)? see log/listen.log"
   fi
 else
-  skip "Drive not reachable"
+  skip "web page round trip"
 fi
 
 step "9. screen recording (10 s) and the stop switch"
 if ask "Run a 10-second test recording now? (macOS shows its recording indicator; screen only, no audio)"; then
   before=$(count_files "$MW_QUEUE/recordings")
-  "$MW_BIN/record.sh" 10 selftest
+  MW_NO_UPLOAD=1 "$MW_BIN/record.sh" 10 selftest
   if wait_new "$MW_QUEUE/recordings" "$before" 5; then
     mov=$(newest "$MW_QUEUE/recordings")
     pass "recording queued: $(basename "$mov") ($(file_size "$mov") bytes)"
@@ -196,7 +197,7 @@ if ask "Run a 10-second test recording now? (macOS shows its recording indicator
   if [ "$AUTO" = 1 ]; then delay=1; else delay=5; fi
   ( sleep "$delay"; touch "$MW_PAUSE" ) &
   t0=$(now)
-  "$MW_BIN/record.sh" 30 selftest-stop
+  MW_NO_UPLOAD=1 "$MW_BIN/record.sh" 30 selftest-stop
   took=$(( $(now) - t0 ))
   wait
   rm -f "${MW_PAUSE:?}"
@@ -237,7 +238,7 @@ else
 fi
 
 step "11. things only you can check"
-info "a) Reboot, log in, run ./bin/status.sh: capture/upload/record should say 'loaded' without you doing anything."
+info "a) Reboot, log in, run ./bin/status.sh: capture/upload/listen/record should say 'loaded' without you doing anything."
 info "b) Turn Wi-Fi off for 15 min: status.sh shows the queue growing; turn it on, and it empties within ~5 min."
 info "c) Lid closed: only testable with an external monitor (otherwise the Mac sleeps). With the lid shut, status.sh shows no new capture."
 info "d) Watch for macOS asking to re-approve screen recording; if shots go blank later, that is why."

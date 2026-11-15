@@ -1,5 +1,6 @@
 #!/bin/sh
-# capture.sh <reason> - one screenshot -> tmp/ -> queue/shots/YYYY-MM-DD/.
+# capture.sh <reason> - one screenshot -> tmp/ -> queue/shots/YYYY-MM-DD/,
+# plus a 320 px thumbnail in queue/thumbs/YYYY-MM-DD/ (the web page's grids use those).
 # Called by trigger.sh, which has already done the gate and the debounce.
 # File name: YYYYMMDD-HHMMSS-<reason>.jpg
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
@@ -14,9 +15,10 @@ name=$ts-$reason.jpg
 raw=$MW_TMP/$name.raw.$$
 fin=$MW_TMP/$name.$$
 tiny=$MW_TMP/$name.tiny.$$
+thumb=$MW_TMP/$name.thumb.$$
 errf=$MW_TMP/$name.err.$$
 # shellcheck disable=SC2329  # called by trap
-cleanup() { rm -f "$raw" "$fin" "$tiny" "$errf"; }
+cleanup() { rm -f "$raw" "$fin" "$tiny" "$thumb" "$errf"; }
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
@@ -74,6 +76,13 @@ while [ -e "$MW_QUEUE/shots/$day/$name" ]; do
   n=$((n + 1))
   name=$ts-$reason-$n.jpg
 done
+# thumbnail first (best effort), so the shot never arrives without one
+if sips --resampleWidth 320 -s format jpeg -s formatOptions 50 "$fin" --out "$thumb" >/dev/null 2>&1 && [ -s "$thumb" ]; then
+  mkdir -p "$MW_QUEUE/thumbs/$day"
+  mv "$thumb" "$MW_QUEUE/thumbs/$day/$name"
+else
+  debug "no thumbnail for $name"
+fi
 if ! mv "$fin" "$MW_QUEUE/shots/$day/$name"; then
   note_error capture "could not move $name into the queue"
   exit 1

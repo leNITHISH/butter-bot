@@ -37,8 +37,9 @@ mw_defaults() {
   SCREENCAPTURE_EXTRA=""
   SKIP_IDENTICAL=1
   SKIP_MAX_AGE_SEC=3600
-  RCLONE_REMOTE=gdrive
-  DRIVE_FOLDER=mac-watch
+  RCLONE_REMOTE=b2
+  B2_BUCKET=macwatch-twjdnu
+  WORKER_URL=https://butter-bot.butter-bot-worker.workers.dev
   RETENTION_DAYS=14
   QUEUE_MAX_FILES=2000
   QUEUE_MAX_MB=2000
@@ -52,7 +53,10 @@ mw_defaults() {
   # Internal knobs (not in config.env; the tests override them via the environment)
   UPLOAD_EVERY_SEC=${UPLOAD_EVERY_SEC:-300}
   PRUNE_EVERY_SEC=${PRUNE_EVERY_SEC:-3600}
-  SETTLE_SEC=${SETTLE_SEC:-16}            # wait for rclone --min-age 15s after a remote snap
+  POLL_SLOW_SEC=${POLL_SLOW_SEC:-20}      # listen.sh: normal poll interval
+  POLL_FAST_SEC=${POLL_FAST_SEC:-2}       # ...while the web page is open
+  LIVE_EVERY_SEC=${LIVE_EVERY_SEC:-4}     # live view: one small frame per this many seconds
+  STATUS_EVERY_SEC=${STATUS_EVERY_SEC:-300}
   WATCHDOG_POLL_SEC=${WATCHDOG_POLL_SEC:-2}
   STOP_GRACE_SEC=${STOP_GRACE_SEC:-5}
 }
@@ -95,7 +99,10 @@ mw_load_config() {
   _int_or EVENT_MIN_GAP_SEC 30
   _int_or UPLOAD_EVERY_SEC 120
   _int_or PRUNE_EVERY_SEC 3600
-  _int_or SETTLE_SEC 16
+  _int_or POLL_SLOW_SEC 20
+  _int_or POLL_FAST_SEC 2
+  _int_or LIVE_EVERY_SEC 4
+  _int_or STATUS_EVERY_SEC 300
   _int_or WATCHDOG_POLL_SEC 2
   _int_or STOP_GRACE_SEC 5
   [ "$INTERVAL_SEC" -ge 10 ] || INTERVAL_SEC=300
@@ -143,7 +150,7 @@ clear_error() { rm -f "$MW_STATE/error-$1" 2>/dev/null; return 0; }
 
 # Remove anything that looks like a token before it can reach a log.
 redact() {
-  sed -E 's/(access_token|refresh_token|client_secret|token|secret)(["'"'"' :=]+)[A-Za-z0-9._~+\/=-]{8,}/\1\2[redacted]/g'
+  sed -E 's/(access_token|refresh_token|client_secret|token|secret|key|Authorization|Bearer)(["'"'"' :=]+)[A-Za-z0-9._~+\/=-]{8,}/\1\2[redacted]/g'
 }
 
 # ---------------------------------------------------------------- time ------
@@ -183,9 +190,9 @@ age_str() { # SECONDS -> 45s / 12m / 3h / 2d
 # ---------------------------------------------------------------- the gate --
 
 # Two kinds of pause. PAUSE (a file you create on the Mac) stops EVERYTHING,
-# including talking to Drive. A remote pause (set from the phone/web page with a
-# `pause` marker, lifted with `resume`) stops capture, recording and uploads but
-# keeps polling Drive so that `resume` can reach us.
+# including talking to the Worker. A remote pause (Pause on the web page, lifted
+# with Resume) stops capture, recording and uploads but keeps polling the Worker
+# so that Resume can reach us.
 paused_local() { [ -e "$MW_PAUSE" ]; }
 paused_remote() { [ -e "$MW_STATE/remote-paused" ]; }
 paused() { paused_local || paused_remote; }
@@ -221,7 +228,7 @@ gate() { # [quiet]
     return 1
   fi
   if paused_remote; then
-    [ "${1:-}" = quiet ] || log INFO "skip: paused remotely (send a resume marker)"
+    [ "${1:-}" = quiet ] || log INFO "skip: paused remotely (press Resume on the web page)"
     return 1
   fi
   if ! lid_open; then
@@ -233,8 +240,8 @@ gate() { # [quiet]
 
 # ------------------------------------------------------- remote settings -----
 # Which settings may be changed from the web page, and the allowed range.
-# Anything else (Drive folder, rclone remote, extra screencapture flags, queue
-# caps, poll interval) can only be changed in config.env on the Mac. There is
+# Anything else (bucket, Worker URL, rclone remote, extra screencapture flags,
+# queue caps, poll interval) can only be changed in config.env on the Mac. There is
 # deliberately no way to put text into a setting: numbers only.
 # NOTE: web/logic.js has the same table; tests/run.sh checks they match.
 remote_bounds() { # KEY -> "min max"
@@ -318,8 +325,8 @@ is_online() {
 # rclone with sane timeouts so a dead network cannot hang a job. Errors only.
 rc() { rclone -q --contimeout 15s --timeout 60s --retries 2 --low-level-retries 3 "$@"; }
 
-rpath() { # SUBPATH -> remote:folder/subpath
-  printf '%s:%s/%s' "$RCLONE_REMOTE" "$DRIVE_FOLDER" "$1"
+rpath() { # SUBPATH -> remote:bucket/subpath
+  printf '%s:%s/%s' "$RCLONE_REMOTE" "$B2_BUCKET" "$1"
 }
 
 # ---------------------------------------------------------------- misc ------
@@ -331,14 +338,21 @@ min_gap_for() {
   case $1 in
     space)                    echo "$SPACE_MIN_GAP_SEC" ;;
     interval)                 echo $((INTERVAL_SEC - 10)) ;;   # the agent ticks every CONTROL_POLL_SEC
-    remote)                   echo 20 ;;
+    remote)                   echo 5 ;;
     wake|lock|unlock|login)   echo "$EVENT_MIN_GAP_SEC" ;;
     *)                        echo 0 ;;
   esac
 }
 
-# Count / list the files waiting to upload (shots, recordings, control notes).
+# Count / list the files waiting to upload (shots, thumbnails, recordings).
 queue_files() {
   find "$MW_QUEUE" -type f \( -name '*.jpg' -o -name '*.mov' -o -name '*.txt' \) 2>/dev/null
+}
+
+# SHA-256 hex of stdin (macOS has shasum, Linux sha256sum).
+sha256_hex() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+  else sha256sum | cut -d' ' -f1
+  fi
 }
 queue_count() { queue_files | wc -l | tr -d ' '; }

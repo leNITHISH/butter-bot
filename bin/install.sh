@@ -1,7 +1,7 @@
 #!/bin/sh
 # install.sh [--wrapper] [--hammerspoon] [--no-hammerspoon]
 # Idempotent: safe to run again (do so after editing INTERVAL_SEC or CONTROL_POLL_SEC).
-#   (default)       three LaunchAgents run /bin/sh directly
+#   (default)       four LaunchAgents run /bin/sh directly (capture, upload, listen, record)
 #   --wrapper       run them through ~/mac-watch/MacWatch.app instead. Fallback for when
 #                   Screen Recording permission will not stick to /bin/sh (see README).
 #   --hammerspoon   after asking, add ONE line to ~/.hammerspoon/init.lua (Phase 3 triggers),
@@ -54,11 +54,15 @@ if ! command -v rclone >/dev/null 2>&1; then
   say ""
   say "!! rclone is not installed. Captures will queue locally but nothing can upload."
   say "   Install it:   brew install rclone"
-  say "   Then log in:  ./bin/setup-drive.sh"
+  say "   Then:         ./bin/setup-remote.sh"
 elif ! rclone listremotes 2>/dev/null | grep -qx "$RCLONE_REMOTE:"; then
   say ""
   say "!! rclone has no remote called '$RCLONE_REMOTE'. Captures will queue but not upload."
-  say "   Run:  ./bin/setup-drive.sh    (explains the Drive permission trade-off first)"
+  say "   Run:  ./bin/setup-remote.sh    (asks for the Mac's Backblaze key)"
+fi
+if [ ! -s "$MW_HOME/.mac-token" ]; then
+  say ""
+  say "!! No Mac token yet, so the web page cannot reach this Mac. Run: ./bin/setup-remote.sh"
 fi
 
 # --- folders ----------------------------------------------------------------
@@ -144,12 +148,22 @@ upload_extra="  <key>StartInterval</key>
 record_extra="  <key>RunAtLoad</key>
   <false/>
 "
+# The web page's control channel: a long-running poll loop. launchd restarts it if it
+# exits (at most every 30 s), and it starts at login.
+listen_extra="  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+"
 
 say ""
 say "writing LaunchAgents to $AGENTS_DIR"
 cap_plist=$(write_plist capture "$capture_extra" "$MW_BIN/trigger.sh" interval)
 upl_plist=$(write_plist upload  "$upload_extra"  "$MW_BIN/upload.sh")
 rec_plist=$(write_plist record  "$record_extra"  "$MW_BIN/record.sh" --request)
+lst_plist=$(write_plist listen  "$listen_extra"  "$MW_BIN/listen.sh")
 
 # --- Hammerspoon login agent (only when opted in) ----------------------------
 hs_plist=
@@ -167,7 +181,7 @@ elif [ "$want_hs" = 1 ] || [ -e "$MW_STATE/hammerspoon-enabled" ]; then
 fi
 
 # --- load them (bootout first so re-running picks up changes) ---------------
-for p in "$cap_plist" "$upl_plist" "$rec_plist" $hs_plist; do
+for p in "$cap_plist" "$upl_plist" "$rec_plist" "$lst_plist" $hs_plist; do
   label=$(basename "$p" .plist)
   launchctl bootout "gui/$uid/$label" >/dev/null 2>&1
   if launchctl bootstrap "gui/$uid" "$p"; then
@@ -219,8 +233,8 @@ Installed. What to know:
  3. It starts when you LOG IN, not when the Mac boots. After a power cut or
     reboot nothing runs until you log in (FileVault turns auto-login off).
 
- 4. Remote control: see web/README.md (a small dashboard to snap, record, pause and
-    change settings from your phone).
+ 4. Remote control: open $WORKER_URL on your phone
+    (sign in with Google): status, Screenshot now, Live, Record, Pause, files, storage.
 
  5. Stop everything instantly:   touch $MW_PAUSE
     Resume:                       rm $MW_PAUSE

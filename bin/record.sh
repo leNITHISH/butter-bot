@@ -1,7 +1,7 @@
 #!/bin/sh
-# record.sh [SECONDS] [MARKER]  - screen recording -> tmp/ -> queue/recordings/YYYY-MM-DD/
-#   record.sh --request          launchd mode: reads the marker name left in
-#                                state/record-request by upload.sh
+# record.sh [SECONDS] [LABEL]   - screen recording -> tmp/ -> queue/recordings/YYYY-MM-DD/
+#   record.sh --request          launchd mode: reads the label left in
+#                                state/record-request by listen.sh
 # Screen only: no audio (-g not passed), no camera. macOS shows its own
 # recording indicator and this script does not try to hide it.
 #
@@ -52,7 +52,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
-log INFO "record: starting ${secs}s recording${marker:+ (marker $marker)}"
+log INFO "record: starting ${secs}s recording${marker:+ ($marker)}"
 
 # Watchdog (background): ends the recording early when the lid closes or PAUSE
 # appears, and enforces a wall-clock limit in case screencapture overruns.
@@ -150,18 +150,7 @@ clear_error record
 printf '%s|%s|%s|%s\n' "$(now)" record "$name" ok > "$MW_STATE/last-record"
 log INFO "record: queued $name ($size bytes, partial: $partial)"
 
-# Tell the phone user it ran: a tiny note that uploads to control/.
-if [ -n "$marker" ]; then
-  safe=$(printf '%s' "$marker" | tr -c 'A-Za-z0-9._-' '_')
-  note=done-$safe-$(date +%H%M%S).txt
-  mkdir -p "$MW_QUEUE/control"
-  {
-    echo "marker:    $marker"
-    echo "finished:  $(date '+%Y-%m-%d %H:%M:%S')"
-    echo "recording: recordings/$day/$name"
-    echo "size:      $size bytes"
-    echo "partial:   $partial"
-  } > "$MW_TMP/$note.$$"
-  mv "$MW_TMP/$note.$$" "$MW_QUEUE/control/$note"
-fi
+# Send it now rather than at the next batch (the web page shows it under Recordings).
+# selftest sets MW_NO_UPLOAD=1 so it can open the file before it leaves the queue.
+[ "${MW_NO_UPLOAD:-0}" = 1 ] || "$MW_BIN/upload.sh" --now
 exit 0

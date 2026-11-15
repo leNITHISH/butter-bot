@@ -1,8 +1,8 @@
 #!/bin/sh
 # uninstall.sh [--purge]
-# Stops and removes the three LaunchAgents. Keeps your data and config.
+# Stops and removes the LaunchAgents. Keeps your data and config.
 #   --purge  also deletes queue/, tmp/, log/, state/ (asks first). Never touches
-#            config.env, the rclone config, or anything in Google Drive.
+#            config.env, .mac-token, the rclone config, or anything in Backblaze.
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
@@ -11,7 +11,7 @@ mw_load_config
 AGENTS_DIR=${MW_LAUNCH_AGENTS_DIR:-$HOME/Library/LaunchAgents}
 uid=$(id -u)
 
-for a in capture upload record hammerspoon; do
+for a in capture upload listen record hammerspoon; do
   label=com.macwatch.$a
   launchctl bootout "gui/$uid/$label" >/dev/null 2>&1
   if [ -f "$AGENTS_DIR/$label.plist" ]; then
@@ -19,7 +19,7 @@ for a in capture upload record hammerspoon; do
     echo "removed $AGENTS_DIR/$label.plist"
   fi
 done
-rm -rf "$MW_STATE/record.lock" "$MW_STATE/upload.lock" "$MW_STATE/hammerspoon-enabled"
+rm -rf "$MW_STATE/record.lock" "$MW_STATE/upload.lock" "$MW_STATE/listen.lock" "$MW_STATE/hammerspoon-enabled"
 echo "mac-watch agents stopped and removed. It will not start at login any more."
 
 if [ "${1:-}" = "--purge" ]; then
@@ -33,7 +33,7 @@ if [ "${1:-}" = "--purge" ]; then
   esac
 else
   echo "Your data is untouched: $MW_HOME/{queue,log,state} and config.env."
-  echo "Add --purge to delete the local data too. Drive files are never touched; delete them in Drive yourself."
+  echo "Add --purge to delete the local data too. Files in Backblaze are never touched (delete them from the web page)."
 fi
 [ -d "$MW_HOME/MacWatch.app" ] && echo "Note: $MW_HOME/MacWatch.app (optional wrapper) is still there; delete it if you like."
 exit 0

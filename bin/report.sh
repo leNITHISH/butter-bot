@@ -1,7 +1,7 @@
 #!/bin/sh
 # report.sh - write state/status.json: what the web dashboard shows about this Mac.
 # Contains no secrets and no screen content: times, counts, battery, error text.
-# upload.sh copies it to Drive control/status.json.
+# listen.sh posts it to the Worker (POST /mac/status) every 5 minutes and on changes.
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
@@ -37,6 +37,12 @@ fi
 lu=$(cat "$MW_STATE/last-upload-ok" 2>/dev/null); case $lu in ''|*[!0-9]*) lu=0 ;; esac
 rc_n=$(grep -c . "$MW_STATE/remote.conf" 2>/dev/null); rc_n=${rc_n:-0}
 ver=$(git -C "$MW_HOME" rev-parse --short HEAD 2>/dev/null)
+dfree=$(df -k "$MW_HOME" 2>/dev/null | awk 'NR == 2 { printf "%.1f", $4 / 1048576 }')
+case $dfree in ''|*[!0-9.]*) dfree=null ;; esac
+qkb=$(du -sk "$MW_QUEUE" 2>/dev/null | awk '{print $1}')
+case $qkb in ''|*[!0-9]*) qkb=0 ;; esac
+lshots=$(find "$MW_QUEUE/shots" -type f -name '*.jpg' 2>/dev/null | wc -l | tr -d ' ')
+lpoll=$(cat "$MW_STATE/last-poll-ok" 2>/dev/null); case $lpoll in ''|*[!0-9]*) lpoll=0 ;; esac
 
 out=$MW_STATE/status.json
 {
@@ -49,6 +55,10 @@ out=$MW_STATE/status.json
   printf '  "online": "%s",\n' "$(js "$(cat "$MW_STATE/online" 2>/dev/null)")"
   printf '  "lastCapture": {"epoch": %s, "reason": "%s", "name": "%s", "result": "%s"},\n' "$lc_e" "$(js "$lc_reason")" "$(js "$lc_name")" "$(js "$lc_res")"
   printf '  "queue": %s,\n' "$(queue_count)"
+  printf '  "queueMB": %s,\n' "$(awk -v k="$qkb" 'BEGIN { printf "%.1f", k / 1024 }')"
+  printf '  "localShots": %s,\n' "${lshots:-0}"
+  printf '  "diskFreeGB": %s,\n' "$dfree"
+  printf '  "lastPollOk": %s,\n' "$lpoll"
   printf '  "lastUploadOk": %s,\n' "$lu"
   printf '  "battery": "%s",\n' "$(js "$batt")"
   printf '  "power": "%s",\n' "$power"

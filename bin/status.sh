@@ -18,7 +18,7 @@ echo
 if paused_local; then
   line "state" "PAUSED  (PAUSE file exists; nothing captures, records or uploads. Remove it with: rm $MW_PAUSE)"
 elif paused_remote; then
-  line "state" "PAUSED REMOTELY  (from the web page/phone; create a 'resume' folder in Drive control/, or: rm $MW_STATE/remote-paused)"
+  line "state" "PAUSED REMOTELY  (from the web page; press Resume there, or: rm $MW_STATE/remote-paused)"
 else
   line "state" "active"
 fi
@@ -31,7 +31,7 @@ fi
 line "lid" "$(lid_state)"
 
 if command -v launchctl >/dev/null 2>&1 && [ "$(uname -s)" = Darwin ]; then
-  for a in capture upload record hammerspoon; do
+  for a in capture upload listen record hammerspoon; do
     [ "$a" = hammerspoon ] && [ ! -e "$MW_STATE/hammerspoon-enabled" ] && continue
     if launchctl list 2>/dev/null | grep -q "com.macwatch.$a\$"; then
       line "agent $a" "loaded"
@@ -53,8 +53,22 @@ n=$(queue_count)
 kb=$(du -sk "$MW_QUEUE" 2>/dev/null | awk '{print $1}')
 line "queue" "$n file(s), ${kb:-0} KB waiting to upload (cap $QUEUE_MAX_FILES files / $QUEUE_MAX_MB MB)"
 line "online" "$(cat "$MW_STATE/online" 2>/dev/null || echo unknown)  (as of the last upload run)"
-line "last upload" "$(ago "$(cat "$MW_STATE/last-upload-ok" 2>/dev/null)")  (last time files really reached Drive)"
-line "last poll" "$(ago "$(cat "$MW_STATE/last-poll" 2>/dev/null)")  (last time Drive was checked for markers)"
+line "last upload" "$(ago "$(cat "$MW_STATE/last-upload-ok" 2>/dev/null)")  (last time files really reached Backblaze)"
+pend=$(grep -c . "$MW_STATE/index-pending" 2>/dev/null)
+[ "${pend:-0}" -gt 0 ] && line "index" "$pend uploaded file(s) not yet reported to the Worker (retried every minute)"
+if [ ! -s "$MW_HOME/.mac-token" ]; then
+  line "worker" "NOT SET UP  (run ./bin/setup-remote.sh)"
+else
+  case $(cat "$MW_STATE/worker-reach" 2>/dev/null) in
+    ok)        wr="reachable" ;;
+    "fail 000") wr="NOT reachable (offline?)" ;;
+    fail*)     wr="REFUSING this Mac (HTTP $(cut -d' ' -f2 "$MW_STATE/worker-reach")); see the ERROR below" ;;
+    *)         wr="unknown (listen agent has not run yet)" ;;
+  esac
+  line "worker" "$wr  ($WORKER_URL)"
+  line "last poll" "$(ago "$(cat "$MW_STATE/last-poll-ok" 2>/dev/null)")  (last time the web page's commands were checked)"
+  line "last command" "#$(cat "$MW_STATE/last-cmd" 2>/dev/null || echo none)"
+fi
 
 lr=$(cat "$MW_STATE/last-record" 2>/dev/null)
 if [ -d "$MW_STATE/record.lock" ]; then
@@ -79,7 +93,7 @@ done
 
 echo
 echo "  last log lines (log/):"
-for l in capture upload record events; do
+for l in capture upload listen record events; do
   [ -s "$MW_LOG/$l.log" ] && tail -n 2 "$MW_LOG/$l.log" | sed "s/^/    $l: /"
 done
 exit 0

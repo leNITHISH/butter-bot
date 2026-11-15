@@ -1,3 +1,14 @@
 #!/bin/sh
+# Fake curl. The connectivity check answers 204 (or fails when $STUB_DIR/offline exists);
+# everything else (the fake Worker on 127.0.0.1) goes to the REAL curl, so the Mac scripts'
+# HTTP code is tested for real. Arguments are recorded (the Mac token must never be among them).
+echo "curl $*" >> "$STUB_DIR/curl_calls"
 if [ -e "$STUB_DIR/offline" ]; then printf '000'; exit 7; fi
-printf '204'
+case "$*" in
+  *generate_204*) printf '204'; exit 0 ;;
+esac
+if [ -e "$STUB_DIR/worker_down" ]; then printf '000'; exit 7; fi
+for c in /usr/bin/curl /bin/curl /usr/local/bin/curl; do
+  [ -x "$c" ] && exec "$c" "$@"
+done
+echo "stub curl: no real curl found" >&2; exit 2

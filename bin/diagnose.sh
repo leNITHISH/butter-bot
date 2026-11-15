@@ -1,9 +1,11 @@
 #!/bin/sh
 # diagnose.sh - print non-secret facts about this Mac and mac-watch, to paste back.
-# Never prints the rclone config or token. Takes one test screenshot (not saved).
+# Never prints the rclone config, the B2 key or the Mac token. Takes one test screenshot (not saved).
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
+# shellcheck source=api.sh
+. "$MW_BIN/api.sh"
 mw_load_config
 mkdir -p "$MW_TMP" "$MW_LOG" "$MW_STATE" 2>/dev/null
 
@@ -53,18 +55,31 @@ if have rclone; then
   echo "remotes: $(rclone listremotes 2>/dev/null | tr '\n' ' ')"
   cfg=$(rclone config file 2>/dev/null | tail -n 1)
   [ -f "$cfg" ] && ls -l "$cfg" | awk '{print "config file mode/owner: " $1 " " $3}'
-  if rclone lsd "$RCLONE_REMOTE:" --max-depth 0 >/dev/null 2>&1; then
-    echo "login to $RCLONE_REMOTE: OK"
+  if rclone lsf "$RCLONE_REMOTE:$B2_BUCKET" --max-depth 1 >/dev/null 2>&1; then
+    echo "bucket $B2_BUCKET via $RCLONE_REMOTE: OK"
   else
-    echo "login to $RCLONE_REMOTE: FAILED"
+    echo "bucket $B2_BUCKET via $RCLONE_REMOTE: FAILED"
   fi
   printf 'online check: '; if is_online; then echo yes; else echo no; fi
+fi
+
+h "Worker"
+echo "url: $WORKER_URL"
+printf 'health: '; curl -s --max-time 10 "$WORKER_URL/health" 2>/dev/null || echo "no answer"
+if [ -s "$MW_TOKEN_FILE" ]; then
+  ls -l "$MW_TOKEN_FILE" | awk '{print "token file mode: " $1}'
+  api GET "/mac/poll?paused=no" "$MW_TMP/diag.out"
+  echo "poll with the Mac token: HTTP $API_CODE  $( [ "$API_CODE" = 200 ] && echo OK || api_problem "$API_CODE")"
+  [ "$API_CODE" = 200 ] && sed -e 's/^/  /' "$MW_TMP/diag.out"
+  rm -f "$MW_TMP/diag.out"
+else
+  echo "no Mac token: run ./bin/setup-remote.sh"
 fi
 
 h "launchd"
 launchctl list 2>/dev/null | grep macwatch || echo "(no com.macwatch jobs loaded)"
 if have launchctl; then
-  for a in capture upload record; do
+  for a in capture upload listen record; do
     echo "[$a]"; launchctl print "gui/$(id -u)/com.macwatch.$a" 2>&1 | grep -E 'state =|last exit code|runs =|run interval' | head -n 4
   done
 fi
@@ -77,10 +92,10 @@ h "status"
 "$MW_BIN/status.sh"
 
 h "last log lines"
-for l in capture upload record events; do
+for l in capture upload listen record events; do
   [ -s "$MW_LOG/$l.log" ] && { echo "[$l.log]"; tail -n 8 "$MW_LOG/$l.log"; }
 done
-for l in capture upload record; do
+for l in capture upload listen record; do
   [ -s "$MW_LOG/launchd-$l.log" ] && { echo "[launchd-$l.log]"; tail -n 5 "$MW_LOG/launchd-$l.log"; }
 done
 echo

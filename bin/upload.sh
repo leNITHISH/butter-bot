@@ -1,49 +1,54 @@
 #!/bin/sh
-# upload.sh - runs every CONTROL_POLL_SEC (and when the network config changes).
+# upload.sh [--now] - runs every CONTROL_POLL_SEC (and when the network config changes).
 #   1. gate (lid open, no local PAUSE); optional KEEP_AWAKE; keep Hammerspoon alive
 #   2. housekeeping: queue cap, old temp files          (also works while offline)
 #   3. online check; exit quietly when offline
-#   4. Drive control/: markers (snap-now, record-5min, pause, resume) and config.remote
-#   5. flush queue/ to Drive (rclone move), prune Drive older than RETENTION_DAYS,
-#      publish status.json for the web dashboard
+#   4. flush queue/ to Backblaze B2 (rclone move) in batches of UPLOAD_EVERY_SEC,
+#      then tell the Worker which files arrived (POST /mac/index) so the web page lists them
+#   --now   upload everything at once (listen.sh uses it right after "Screenshot now")
+# Deleting old files is the Worker's job now (retention + storage guard); nothing here deletes
+# anything in the bucket.
 MW_BIN=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib.sh
 . "$MW_BIN/lib.sh"
+# shellcheck source=api.sh
+. "$MW_BIN/api.sh"
 mw_init upload
 
-# The local PAUSE file stops everything. A remote pause (marker) keeps us polling
-# Drive so that `resume` can reach us, but nothing is captured or uploaded.
+now_mode=0
+[ "${1:-}" = --now ] && now_mode=1
+
+# The local PAUSE file stops everything. A remote pause stops uploads too (listen.sh
+# keeps polling so that Resume can reach us).
 paused_local && exit 0
 lid_open || exit 0
 
-# ------------------------------------------------------------ keep awake ----
-# Optional (KEEP_AWAKE=1). Each poll starts a short caffeinate that expires on
-# its own, so closing the lid (which stops this job) releases the hold within
-# a few minutes. Needs AbandonProcessGroup in the plist so launchd leaves it be.
-keepawake_tick() {
-  [ "$KEEP_AWAKE" = 1 ] || return 0
-  command -v caffeinate >/dev/null 2>&1 || return 0
-  caffeinate -di -t $((CONTROL_POLL_SEC * 3)) >/dev/null 2>&1 &
-}
-paused_remote || keepawake_tick
-
-"$MW_BIN/heartbeat.sh" power
-
-# Phase 3 helper: keep Hammerspoon running (only if install.sh --hammerspoon enabled it).
-if [ -e "$MW_STATE/hammerspoon-enabled" ] && ! pgrep -x Hammerspoon >/dev/null 2>&1; then
-  log WARN "Hammerspoon is not running; starting it"
-  open -g -a Hammerspoon >/dev/null 2>&1
+if [ "$now_mode" = 0 ]; then
+  # ---------------------------------------------------------- keep awake ----
+  # Optional (KEEP_AWAKE=1). Each run starts a short caffeinate that expires on
+  # its own, so closing the lid (which stops this job) releases the hold within
+  # a few minutes. Needs AbandonProcessGroup in the plist so launchd leaves it be.
+  if [ "$KEEP_AWAKE" = 1 ] && ! paused_remote && command -v caffeinate >/dev/null 2>&1; then
+    caffeinate -di -t $((CONTROL_POLL_SEC * 3)) >/dev/null 2>&1 &
+  fi
+  "$MW_BIN/heartbeat.sh" power
+  # Phase 3 helper: keep Hammerspoon running (only if install.sh --hammerspoon enabled it).
+  if [ -e "$MW_STATE/hammerspoon-enabled" ] && ! pgrep -x Hammerspoon >/dev/null 2>&1; then
+    log WARN "Hammerspoon is not running; starting it"
+    open -g -a Hammerspoon >/dev/null 2>&1
+  fi
 fi
 
-if ! lock_acquire upload 10; then
-  debug "upload: previous run still going"
-  exit 0
-fi
-# Drive said "slow down": stay quiet until the backoff expires instead of hammering it.
+# --now waits for a running batch (up to 30 s) instead of giving up.
+_i=0
+until lock_acquire upload 10; do
+  if [ "$now_mode" = 0 ] || [ "$_i" -ge 30 ]; then debug "upload: previous run still going"; exit 0; fi
+  sleep 1; _i=$((_i + 1))
+done
 _bo=$(cat "$MW_STATE/backoff-until" 2>/dev/null)
 case $_bo in ''|*[!0-9]*) _bo=0 ;; esac
 if [ "$(now)" -lt "$_bo" ]; then
-  debug "upload: backing off for $((_bo - $(now)))s after a Drive rate limit"
+  debug "upload: backing off for $((_bo - $(now)))s"
   lock_release upload
   exit 0
 fi
@@ -51,7 +56,7 @@ run_errors=0
 errf=$MW_TMP/rclone-err.$$
 list=$MW_TMP/list.$$
 # shellcheck disable=SC2329  # called by trap
-cleanup() { rm -f "$errf" "$list" "$list.sorted"; lock_release upload; }
+cleanup() { rm -f "$errf" "$list" "$list.sorted" "$MW_TMP/index.$$" "$MW_TMP/index-out.$$"; lock_release upload; }
 trap cleanup EXIT
 trap 'exit 1' INT TERM HUP
 
@@ -86,7 +91,7 @@ find "$MW_TMP" -type f -mmin +360 -exec rm -f {} \; 2>/dev/null
 # ---------------------------------------------------------------- online ----
 
 prev_online=$(cat "$MW_STATE/online" 2>/dev/null)
-force_flush=0
+force_flush=$now_mode
 if is_online; then
   echo yes > "$MW_STATE/online"
   if [ "$prev_online" = no ]; then
@@ -98,261 +103,89 @@ else
   [ "$prev_online" = no ] || log INFO "offline; shots will queue locally (queue: $(queue_count) file(s))"
   exit 0
 fi
-now > "$MW_STATE/last-poll"
+
+paused_remote && exit 0
 
 # ---------------------------------------------------------- rclone errors ---
-
-backing_off() {
-  _b=$(cat "$MW_STATE/backoff-until" 2>/dev/null)
-  case $_b in ''|*[!0-9]*) return 1 ;; esac
-  [ "$(now)" -lt "$_b" ]
-}
 
 report_rclone_error() { # CONTEXT EXITCODE   (stderr of the failed call is in $errf)
   run_errors=$((run_errors + 1))
   _msg=$(tail -n 5 "$errf" 2>/dev/null | redact | tr '\n' ' ')
   _hint=
   case $_msg in
-    *invalid_grant*|*oauth2*|*401*|*nauthorized*|*"didn't find section"*|*authError*|*"refresh token"*|*"Failed to configure token"*)
-      _hint=" >>> AUTH PROBLEM: on the Mac run: rclone config reconnect $RCLONE_REMOTE:" ;;
-    *rateLimitExceeded*|*"User rate limit"*)
+    *unauthorized*|*bad_auth_token*|*401*|*"didn't find section"*|*"couldn't find"*|*bad_request*"application key"*)
+      _hint=" >>> AUTH PROBLEM: run ./bin/setup-remote.sh on the Mac (the Mac's B2 key)" ;;
+    *cap_exceeded*|*"transaction cap"*|*"Transaction cap"*)
+      echo $(($(now) + 3600)) > "$MW_STATE/backoff-until"
+      _hint=" >>> Backblaze daily cap reached (pausing 1 h). See Backblaze > Caps & Alerts" ;;
+    *429*|*too_many_requests*|*503*|*service_unavailable*|*"rate limit"*)
       echo $(($(now) + 300)) > "$MW_STATE/backoff-until"
-      _hint=" >>> Drive rate limit (pausing 5 min). Permanent fix: ./bin/setup-oauth.sh (own Google client, see README)" ;;
+      _hint=" >>> Backblaze asked us to slow down (pausing 5 min)" ;;
   esac
   note_error upload "$1 failed (exit $2): $_msg$_hint"
 }
 
-# ---------------------------------------------------------------- markers ---
-# A marker is any file OR folder in Drive control/ whose name starts with
-# snap-now or record-5min (any case). Delete first, act only if the delete worked.
-
-want_settle=0
-status_dirty=0
-
-handle_markers() {
-  _ctl=$(rpath control)
-  rc lsf --format tp "$_ctl" > "$list" 2> "$errf"
-  _st=$?
-  if [ "$_st" -eq 3 ]; then
-    rc mkdir "$_ctl" 2> "$errf" || report_rclone_error "creating control folder" $?
-    return 0
-  fi
-  if [ "$_st" -ne 0 ]; then
-    report_rclone_error "listing control/" "$_st"
-    return 0
-  fi
-  _now_w=$(wall_to_secs "$(local_wall_now)")
-  _saw_conf=0
-
-  while IFS= read -r _line <&3; do
-    [ -n "$_line" ] || continue
-    _t=${_line%%;*}
-    _p=${_line#*;}
-    _isdir=0
-    case $_p in */) _isdir=1; _p=${_p%/} ;; esac
-    _lc=$(printf '%s' "$_p" | tr '[:upper:]' '[:lower:]')
-    case $_lc in
-      snap-now*)    _kind=snap ;;
-      record-5min*) _kind=record ;;
-      pause*)       _kind=pause ;;
-      resume*)      _kind=resume ;;
-      config.remote)
-        _saw_conf=1
-        [ "$_isdir" = 0 ] && apply_remote_file "$_ctl" "$_t"
-        continue ;;
-      *)            continue ;;
-    esac
-
-    _mt=$(wall_to_secs "$_t")
-    if [ -n "$_mt" ]; then
-      _age=$((_now_w - _mt))
-    else
-      _age=0
-      log WARN "marker '$_p': cannot read its time ('$_t'), treating it as fresh"
-    fi
-
-    # delete first
-    if [ "$_isdir" = 1 ]; then
-      rc purge "$_ctl/$_p" --drive-use-trash=false 2> "$errf"
-    else
-      rc deletefile "$_ctl/$_p" --drive-use-trash=false 2> "$errf"
-    fi
-    _drc=$?
-    if [ "$_drc" -ne 0 ]; then
-      report_rclone_error "deleting marker '$_p' (not acting on it)" "$_drc"
-      continue
-    fi
-
-    # pause/resume are safe to act on late (a late pause is the safe direction), so they have no age limit
-    if [ "$_kind" != pause ] && [ "$_kind" != resume ] && [ "$_age" -gt $((MARKER_MAX_AGE_MIN * 60)) ]; then
-      log INFO "marker '$_p' is $(age_str "$_age") old (limit ${MARKER_MAX_AGE_MIN}m): deleted, not acted on"
-      continue
-    fi
-
-    case $_kind in
-      pause)
-        log INFO "marker '$_p': paused remotely (send a 'resume' marker to continue)"
-        date +%s > "$MW_STATE/remote-paused"
-        status_dirty=1
-        ;;
-      resume)
-        log INFO "marker '$_p': resumed"
-        rm -f "$MW_STATE/remote-paused"
-        status_dirty=1
-        ;;
-      snap|record)
-        if paused_remote; then
-          log INFO "marker '$_p': ignored because capturing is paused remotely"
-          continue
-        fi
-        ;;
-    esac
-    case $_kind in
-      snap)
-        log INFO "marker '$_p': taking a screenshot"
-        "$MW_BIN/trigger.sh" remote
-        want_settle=1
-        ;;
-      record)
-        log INFO "marker '$_p': starting a ${RECORD_SEC}s recording"
-        start_recording "$_p"
-        ;;
-    esac
-  done 3< "$list"   # fd 3: nothing inside the loop can eat our input
-
-  # config.remote removed from Drive: go back to the settings in config.env
-  if [ "$_saw_conf" = 0 ] && [ -e "$MW_STATE/remote.conf" ]; then
-    log INFO "config.remote is gone from Drive: back to config.env settings"
-    rm -f "$MW_STATE/remote.conf" "$MW_STATE/remote-conf-time"
-    mw_load_config
-    status_dirty=1
-  fi
-}
-
-# Download and apply Drive control/config.remote, but only when its time changed.
-apply_remote_file() { # CONTROL-PATH TIME-STRING
-  [ "$2" != "$(cat "$MW_STATE/remote-conf-time" 2>/dev/null)" ] || return 0
-  if rc cat "$1/config.remote" > "$MW_TMP/remote.raw.$$" 2> "$errf"; then
-    _res=$(apply_remote_config "$MW_TMP/remote.raw.$$" "$MW_STATE/remote.conf")
-    printf '%s' "$2" > "$MW_STATE/remote-conf-time"
-    log INFO "config.remote changed: $_res"
-    mw_load_config
-    status_dirty=1
-  else
-    report_rclone_error "reading config.remote" $?
-  fi
-  rm -f "$MW_TMP/remote.raw.$$"
-}
-
-# Recordings run as their own on-demand LaunchAgent so they outlive this job
-# and get normal signal handling. See bin/record.sh.
-start_recording() { # MARKER-NAME
-  if [ -d "$MW_STATE/record.lock" ]; then
-    log INFO "marker '$1': a recording is already running, ignoring"
-    return 0
-  fi
-  printf '%s' "$1" > "$MW_STATE/record-request"
-  if ! launchctl kickstart "gui/$(id -u)/com.macwatch.record" > "$errf" 2>&1; then
-    note_error record "could not start the recording agent (run ./bin/install.sh again?): $(head -c 200 "$errf" | tr '\n' ' ')"
-    rm -f "$MW_STATE/record-request"
-  fi
-}
-
-handle_markers
-
-# ------------------------------------------------------------ status.json ---
-# The web dashboard reads Drive control/status.json. Pushed on the batch cadence,
-# and immediately after a pause/resume/config change.
-push_status() { # force(0/1)
-  backing_off && return 0
-  if [ "$1" != 1 ]; then
-    _last=$(cat "$MW_STATE/last-status-push" 2>/dev/null)
-    case $_last in ''|*[!0-9]*) _last=0 ;; esac
-    [ $(($(now) - _last)) -ge "$UPLOAD_EVERY_SEC" ] || return 0
-  fi
-  "$MW_BIN/report.sh" || return 0
-  if rc copyto "$MW_STATE/status.json" "$(rpath control)/status.json" 2> "$errf"; then
-    now > "$MW_STATE/last-status-push"
-  else
-    report_rclone_error "publishing status.json" $?
-  fi
-}
-
-if paused_remote; then
-  push_status "$status_dirty"
-  [ "$run_errors" = 0 ] && clear_error upload
-  exit 0
-fi
-
 # ------------------------------------------------------------------ flush ---
+# One rclone call for all three kinds: every rclone start authorizes with B2 once (a
+# class C transaction, 2,500 free per day), so fewer calls = more headroom.
+# --no-check-dest: do not list the bucket first (more class C calls, and nothing is ever
+# uploaded twice). `move` deletes the local file only after a verified upload.
 
 flush_queue() { # force(0/1)
-  backing_off && return 0
   if [ "$1" != 1 ]; then
     _last=$(cat "$MW_STATE/last-flush" 2>/dev/null)
     case $_last in ''|*[!0-9]*) _last=0 ;; esac
     [ $(($(now) - _last)) -ge "$UPLOAD_EVERY_SEC" ] || return 0
   fi
-  [ "$(queue_count)" -gt 0 ] || return 0
+  ( cd "$MW_QUEUE" 2>/dev/null && find shots thumbs recordings -type f \( -name '*.jpg' -o -name '*.mov' \) 2>/dev/null ) | sort > "$list"
+  [ -s "$list" ] || return 0
   now > "$MW_STATE/last-flush"
-  _before=$(queue_count)
-  _failed=0
-  for _kind in shots recordings control; do
-    [ -d "$MW_QUEUE/$_kind" ] || continue
-    # `move` deletes the local file only after a verified upload.
-    rc move "$MW_QUEUE/$_kind" "$(rpath "$_kind")" --min-age 15s --delete-empty-src-dirs 2> "$errf"
-    _rc=$?
-    if [ "$_rc" -ne 0 ]; then
-      report_rclone_error "uploading $_kind" "$_rc"
-      _failed=1
-    fi
-  done
+  # sizes now: after the move the local files are gone
+  while IFS= read -r _rel; do
+    printf '%s %s\n' "$_rel" "$(file_size "$MW_QUEUE/$_rel")"
+  done < "$list" > "$list.sorted"
+  # Files are moved into queue/ atomically (mv), so they are always complete; --now uses no
+  # minimum age, batches keep the plan's 15 s as a second safety margin.
+  if [ "$now_mode" = 1 ]; then _age=0s; else _age=15s; fi
+  rc move "$MW_QUEUE" "$(rpath '')" --min-age "$_age" --no-check-dest \
+     --include '/shots/**' --include '/thumbs/**' --include '/recordings/**' --delete-empty-src-dirs 2> "$errf"
+  _rc=$?
   mkdir -p "$MW_QUEUE"   # --delete-empty-src-dirs must never take the queue root
-  if [ "$_failed" = 0 ]; then
-    clear_error upload
-    _sent=$((_before - $(queue_count)))
-    if [ "$_sent" -gt 0 ]; then
-      now > "$MW_STATE/last-upload-ok"
-      log INFO "upload ok: $_sent of $_before file(s) uploaded, $(queue_count) left (newer than 15s)"
+  _sent=0
+  while IFS=' ' read -r _rel _size; do
+    if [ ! -e "$MW_QUEUE/$_rel" ]; then
+      printf '%s %s\n' "$_rel" "$_size" >> "$MW_STATE/index-pending"
+      _sent=$((_sent + 1))
     fi
+  done < "$list.sorted"
+  rm -f "$list.sorted"
+  if [ "$_rc" -ne 0 ]; then
+    report_rclone_error "uploading" "$_rc"
+  fi
+  if [ "$_sent" -gt 0 ]; then
+    now > "$MW_STATE/last-upload-ok"
+    log INFO "upload ok: $_sent file(s) sent, $(queue_count) left in the queue"
   fi
 }
 
-if [ "$want_settle" = 1 ]; then
-  sleep "$SETTLE_SEC"   # rclone --min-age 15s would skip the shot we just took
-  flush_queue 1
-else
-  flush_queue "$force_flush"
-fi
-
-# ------------------------------------------------------------------ prune ---
-# Permanent delete (no Trash, which would keep eating quota), then drop empty
-# date folders. rclone exit 3 = directory does not exist yet: fine.
-
-prune_drive() {
-  backing_off && return 0
-  _last=$(cat "$MW_STATE/last-prune" 2>/dev/null)
-  case $_last in ''|*[!0-9]*) _last=0 ;; esac
-  [ $(($(now) - _last)) -ge "$PRUNE_EVERY_SEC" ] || return 0
-  now > "$MW_STATE/last-prune"
-  for _kind in shots recordings; do
-    rc delete "$(rpath "$_kind")" --min-age "${RETENTION_DAYS}d" --drive-use-trash=false 2> "$errf"
-    _rc=$?
-    if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 3 ]; then report_rclone_error "pruning $_kind" "$_rc"; continue; fi
-    rc rmdirs "$(rpath "$_kind")" --leave-root 2> "$errf"
-    _rc=$?
-    if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 3 ]; then report_rclone_error "removing empty $_kind folders" "$_rc"; fi
-  done
-  # old "done-*" notes only; never touch anything else the user keeps in control/
-  rc delete "$(rpath control)" --include 'done-*.txt' --min-age "${RETENTION_DAYS}d" --drive-use-trash=false 2> "$errf"
-  _rc=$?
-  if [ "$_rc" -ne 0 ] && [ "$_rc" -ne 3 ]; then report_rclone_error "pruning control notes" "$_rc"; fi
-  log INFO "prune: removed Drive files older than ${RETENTION_DAYS}d"
+# Tell the Worker what arrived. Kept in state/index-pending until the Worker confirms,
+# so nothing is lost while it is unreachable.
+send_index() {
+  [ -s "$MW_STATE/index-pending" ] || return 0
+  api_configured || return 0
+  mv "$MW_STATE/index-pending" "$MW_TMP/index.$$"
+  if api POST /mac/index "$MW_TMP/index-out.$$" "$MW_TMP/index.$$"; then
+    debug "index: $(cat "$MW_TMP/index-out.$$")"
+  else
+    cat "$MW_TMP/index.$$" >> "$MW_STATE/index-pending"
+    log WARN "could not tell the Worker about $(wc -l < "$MW_TMP/index.$$" | tr -d ' ') uploaded file(s): $(api_problem "$API_CODE") (will retry)"
+  fi
+  rm -f "$MW_TMP/index.$$"
 }
-prune_drive
 
-push_status "$((status_dirty || want_settle || force_flush))"
+flush_queue "$force_flush"
+send_index
 
-# A run with no rclone errors at all means Drive is healthy again.
+# A run with no rclone errors at all means B2 is healthy again.
 [ "$run_errors" = 0 ] && clear_error upload
 exit 0

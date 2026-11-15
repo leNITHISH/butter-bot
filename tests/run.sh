@@ -38,10 +38,30 @@ new_env() {
   # fast internals
   export UPLOAD_EVERY_SEC=0 PRUNE_EVERY_SEC=0 SETTLE_SEC=0 WATCHDOG_POLL_SEC=1 STOP_GRACE_SEC=1
   unset STUB_DARWIN STUB_REC_MAX STUB_WIDTH
-  Q=$MW_HOME/queue; D=$STUB_RCLONE_ROOT/mac-watch; L=$MW_HOME/log; S=$MW_HOME/state
+  Q=$MW_HOME/queue; D=$STUB_RCLONE_ROOT/bucket; L=$MW_HOME/log; S=$MW_HOME/state
+  cfg "B2_BUCKET=bucket"; cfg "WORKER_URL="     # no Worker unless a test starts the fake one
+  WPID=
   TODAY=$(date +%Y-%m-%d)
 }
-end_env() { rm -rf "$T"; }
+end_env() { [ -n "${WPID:-}" ] && kill "$WPID" 2>/dev/null; WPID=; rm -rf "$T"; }
+
+# The real Worker code on localhost (tests/fake_worker.mjs). The Mac scripts reach it with
+# real curl; its "B2" is the same folder the fake rclone uploads into ($D).
+REAL_CURL=$(command -v curl 2>/dev/null)    # evaluated before the stubs go on PATH
+start_worker() {
+  od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$MW_HOME/.mac-token"; chmod 600 "$MW_HOME/.mac-token"
+  TOKEN=$(cat "$MW_HOME/.mac-token")
+  _h=$(printf '%s' "$TOKEN" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  mkdir -p "$D"
+  node "$ROOT/tests/fake_worker.mjs" "$T/port" "$D" "$_h" > "$T/worker.log" 2>&1 &
+  WPID=$!
+  _i=0; while [ ! -s "$T/port" ] && [ "$_i" -lt 100 ]; do sleep 0.1; _i=$((_i + 1)); done
+  WURL=http://127.0.0.1:$(cat "$T/port")
+  cfg "WORKER_URL=$WURL"
+}
+wk() { "$REAL_CURL" -s -X POST --data-binary "$2" "$WURL/__test/$1"; }      # test control: cmd, settings, kv
+dump() { "$REAL_CURL" -s "$WURL/__test/dump"; }
+py() { python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
 cfg() { printf '%s\n' "$1" >> "$MW_HOME/config.env"; }   # later lines win
 run() { _s=$1; shift; $SH "$ROOT/bin/$_s" "$@"; }
 nfiles() { find "$1" -type f 2>/dev/null | wc -l | tr -d ' '; }
@@ -98,7 +118,8 @@ if section "capture: file name, location, atomicity"; then
   has "wide screen is shrunk to MAX_WIDTH" "$STUB_DIR/calls" "resampleWidth 1440"
   : > "$STUB_DIR/calls"
   STUB_WIDTH=1000 run trigger.sh wake
-  hasnt "narrow screen is never enlarged" "$STUB_DIR/calls" "resampleWidth"
+  hasnt "narrow screen is never enlarged" "$STUB_DIR/calls" "resampleWidth 1440"
+  has "a 320 px thumbnail is made" "$STUB_DIR/calls" "resampleWidth 320"
   touch "$STUB_DIR/sips_fail"; run trigger.sh lock
   eq "sips failure: uncompressed shot still queued" 3 "$(nshots)"
   end_env
@@ -156,7 +177,8 @@ if section "upload: online, offline, gate"; then
   f=$(first_file "$Q/shots"); fname=${f##*/}
   run upload.sh
   eq "online: queue emptied" 0 "$(nfiles "$Q")"
-  check "online: file is in Drive shots/DATE/" test -f "$D/shots/$TODAY/$fname"
+  check "online: file is in the bucket shots/DATE/" test -f "$D/shots/$TODAY/$fname"
+  check "online: its thumbnail is in thumbs/DATE/" test -f "$D/thumbs/$TODAY/$fname"
   check "online: last-upload-ok recorded" test -s "$S/last-upload-ok"
   check "online: queue root still exists" test -d "$Q"
   rm -rf "$D"
@@ -164,12 +186,12 @@ if section "upload: online, offline, gate"; then
   run trigger.sh wake; run trigger.sh lock
   run upload.sh; eq "offline: exit 0" 0 $?
   eq "offline: files stay queued" 2 "$(nshots)"
-  check "offline: nothing created in Drive" test ! -d "$D/shots"
+  check "offline: nothing created in the bucket" test ! -d "$D/shots"
   hasnt "offline: no ERROR logged" "$L/upload.log" "ERROR"
   rm "$STUB_DIR/offline"
   run upload.sh
   eq "back online: queue drains" 0 "$(nfiles "$Q")"
-  eq "back online: both files in Drive" 2 "$(nfiles "$D/shots")"
+  eq "back online: both files in the bucket" 2 "$(nfiles "$D/shots")"
   end_env
   new_env
   run trigger.sh space
@@ -184,21 +206,23 @@ if section "upload: online, offline, gate"; then
   mkdir -p "$Q/shots/$TODAY" "$Q/recordings/$TODAY"
   echo a > "$Q/shots/$TODAY/20261113-100000-interval.jpg"
   echo b > "$Q/recordings/$TODAY/20261113-100000-rec.mov"
-  echo c > "$Q/control-note.txt"; mkdir -p "$Q/control"; echo c > "$Q/control/done-x-1.txt"
+  mkdir -p "$Q/other"; echo c > "$Q/other/x.jpg"
   run upload.sh
   check "jpg goes to shots/DATE/" test -f "$D/shots/$TODAY/20261113-100000-interval.jpg"
   check "mov goes to recordings/DATE/" test -f "$D/recordings/$TODAY/20261113-100000-rec.mov"
-  check "done note goes to control/" test -f "$D/control/done-x-1.txt"
+  check "only shots/thumbs/recordings are uploaded" test -f "$Q/other/x.jpg" -a ! -e "$D/other"
+  has "one rclone call for all kinds, no destination listing" "$STUB_DIR/rclone_calls" "move .*--no-check-dest.*--include /shots/\*\*"
+  hasnt "nothing is ever deleted in the bucket by the Mac" "$STUB_DIR/rclone_calls" " delete"
   end_env
 fi
 
 if section "upload: loud auth failures, no secrets in logs"; then
   new_env
   run trigger.sh space
-  echo '1|couldn'"'"'t get token: oauth2: cannot fetch token: 400 {"error":"invalid_grant","access_token":"ya29.SUPERSECRETVALUE12345"}' > "$STUB_DIR/rclone_fail"
+  echo '1|Failed to create file system: failed to authorize account: Unauthorized: unauthorized (401) application_key=K005SUPERSECRETVALUE12345' > "$STUB_DIR/rclone_fail"
   run upload.sh
   has "ERROR line in upload.log" "$L/upload.log" "ERROR"
-  has "auth hint tells you the fix" "$L/upload.log" "rclone config reconnect"
+  has "auth hint tells you the fix" "$L/upload.log" "setup-remote.sh"
   hasnt "token value never reaches the log" "$L/upload.log" "SUPERSECRETVALUE"
   eq "failed upload keeps the file" 1 "$(nshots)"
   run status.sh > "$T/status.txt"
@@ -233,41 +257,12 @@ if section "batching"; then
   new_env
   cfg UPLOAD_EVERY_SEC=300
   run trigger.sh space; run upload.sh; run trigger.sh wake
-  mkdir -p "$D/control"; : > "$D/control/snap-now"; run upload.sh
-  eq "snap-now flushes everything at once" 0 "$(nshots)"
+  run upload.sh --now
+  eq "upload.sh --now (after Screenshot now) ignores the batch window" 0 "$(nshots)"
   end_env
 fi
 
-if section "remote config"; then
-  new_env
-  mkdir -p "$D/control"
-  cat > "$D/control/config.remote" <<'CONF'
-# set from the web page
-INTERVAL_SEC=120
-JPEG_QUALITY=010
-KEEP_AWAKE=5
-RCLONE_REMOTE=evil
-SCREENCAPTURE_EXTRA=-m
-DRIVE_FOLDER=elsewhere
-RETENTION_DAYS=1
-MAX_WIDTH=$(touch /tmp/mw-injected)
-lower=5
-SPACE_MIN_GAP_SEC=15
-CONF
-  run upload.sh
-  eq "valid in-range numbers are applied (leading zeros stripped)" "INTERVAL_SEC=120 JPEG_QUALITY=10 SPACE_MIN_GAP_SEC=15" "$(tr '\n' ' ' < "$S/remote.conf" | sed 's/ $//')"
-  check "nothing outside the whitelist is applied (no RCLONE_REMOTE, no DRIVE_FOLDER, no flags)" test "$(grep -c 'RCLONE\|DRIVE\|SCREEN' "$S/remote.conf")" = 0
-  check "out-of-range values rejected (KEEP_AWAKE=5, RETENTION_DAYS=1)" test "$(grep -c 'KEEP_AWAKE\|RETENTION' "$S/remote.conf")" = 0
-  check "shell injection attempt did nothing" test ! -e /tmp/mw-injected
-  has "result is logged" "$L/upload.log" "applied=3 rejected="
-  run trigger.sh space
-  has "applied setting is really used (JPEG_QUALITY=10)" "$STUB_DIR/calls" "formatOptions 10 "
-  : > "$STUB_DIR/rclone_calls"; run upload.sh
-  hasnt "unchanged config.remote is not downloaded again" "$STUB_DIR/rclone_calls" " cat "
-  check "config.remote stays in Drive" test -f "$D/control/config.remote"
-  rm "$D/control/config.remote"; run upload.sh
-  check "removed from Drive: back to config.env" test ! -e "$S/remote.conf"
-  end_env
+if section "remote settings are live"; then
   new_env
   echo "INTERVAL_SEC=60" > "$S/../home/state/remote.conf" 2>/dev/null || { mkdir -p "$S"; echo "INTERVAL_SEC=60" > "$S/remote.conf"; }
   mkdir -p "$S"; echo "INTERVAL_SEC=60" > "$S/remote.conf"
@@ -280,48 +275,11 @@ CONF
   end_env
 fi
 
-if section "remote pause"; then
-  new_env
-  mkdir -p "$D/control/pause"
-  run upload.sh
-  check "pause marker: remote-paused state set" test -e "$S/remote-paused"
-  check "pause marker deleted" test ! -e "$D/control/pause"
-  run trigger.sh space
-  eq "paused remotely: nothing captured" 0 "$(nshots)"
-  has "paused remotely: reason logged" "$L/capture.log" "paused remotely"
-  STUB_REC_MAX=1 run record.sh 3
-  eq "paused remotely: no recording" 0 "$(nfiles "$Q/recordings")"
-  mkdir -p "$Q/shots/$TODAY"; echo x > "$Q/shots/$TODAY/20261113-100000-interval.jpg"
-  mkdir -p "$D/control/snap-now"
-  run upload.sh
-  eq "paused: snap-now is deleted but NOT acted on" 0 "$(find "$Q" "$D/shots" -name '*-remote.jpg' 2>/dev/null | wc -l | tr -d ' ')"
-  check "paused: snap-now marker consumed" test ! -e "$D/control/snap-now"
-  eq "paused: queued files are not uploaded" 1 "$(nshots)"
-  check "paused: status.json says so" grep -q '"paused": "remote"' "$D/control/status.json"
-  mkdir -p "$D/control/Resume"
-  run upload.sh
-  check "resume marker: pause lifted" test ! -e "$S/remote-paused"
-  eq "after resume: queue uploads again" 0 "$(nshots)"
-  run trigger.sh space
-  eq "after resume: capturing works" 1 "$(nshots)"
-  # the local PAUSE file is stronger: it stops even the Drive polling
-  touch "$MW_HOME/PAUSE"; mkdir -p "$D/control/pause"
-  run upload.sh
-  check "local PAUSE file: markers are not even read" test -e "$D/control/pause"
-  rm "$MW_HOME/PAUSE" "$S/remote-paused" 2>/dev/null
-  rm -rf "$D/control/pause"
-  # a late pause still works (safe direction)
-  mkdir -p "$D/control/pause"; old "$D/control/pause"
-  run upload.sh
-  check "old pause marker still pauses" test -e "$S/remote-paused"
-  end_env
-fi
-
 if section "status.json"; then
   new_env
   run trigger.sh space
   printf '%s\n' '1 something "quoted" \ back\slash failed' > "$S/error-capture"
-  run upload.sh
+  run report.sh
   python3 -c '
 import json,sys
 d=json.load(open(sys.argv[1]))
@@ -329,11 +287,9 @@ assert d["lid"]=="open" and d["paused"]=="no", d
 assert d["lastCapture"]["reason"]=="space" and d["lastCapture"]["result"]=="ok", d
 assert isinstance(d["updated"],int) and d["battery"]=="87%" and d["power"]=="AC", d
 assert "quoted" in d["errors"] and chr(34) not in d["errors"] and chr(92) not in d["errors"], d
-' "$D/control/status.json" && ok "status.json is valid JSON with the expected fields; quotes/backslashes cannot break it" || bad "status.json content"
-  hasnt "status.json has no screen content or secrets" "$D/control/status.json" "token"
-  : > "$STUB_DIR/rclone_calls"
-  cfg UPLOAD_EVERY_SEC=300; run upload.sh
-  hasnt "batched: status.json is not re-published within the window" "$STUB_DIR/rclone_calls" "copyto"
+assert d["queue"]==2 and d["localShots"]==1 and isinstance(d["queueMB"],float) and (d["diskFreeGB"] is None or d["diskFreeGB"]>=0), d
+' "$S/status.json" && ok "status.json is valid JSON with the expected fields (disk, queue); quotes/backslashes cannot break it" || bad "status.json content"
+  hasnt "status.json has no screen content or secrets" "$S/status.json" "token"
   end_env
 fi
 
@@ -371,10 +327,10 @@ fi
 if section "rate limit backoff"; then
   new_env
   run trigger.sh space
-  echo '1|googleapi: Error 403: Rate Limit Exceeded, rateLimitExceeded' > "$STUB_DIR/rclone_fail"
+  echo '1|b2 upload: too_many_requests (429): slow down' > "$STUB_DIR/rclone_fail"
   run upload.sh
   check "rate limit: backoff stamp written" test -s "$S/backoff-until"
-  has "rate limit: hint names the permanent fix" "$L/upload.log" "setup-oauth.sh"
+  has "rate limit: hint says what happens" "$L/upload.log" "slow down"
   rm "$STUB_DIR/rclone_fail"; : > "$STUB_DIR/rclone_calls"
   run upload.sh
   eq "during backoff: rclone is not called at all" 0 "$(wc -l < "$STUB_DIR/rclone_calls" | tr -d ' ')"
@@ -385,11 +341,12 @@ if section "rate limit backoff"; then
   check "after a clean run the error flag is gone" test ! -f "$S/error-upload"
   end_env
   new_env
+  run trigger.sh space
   echo "1|boom: something transient" > "$STUB_DIR/rclone_fail"
   run upload.sh
   check "transient error flagged" test -f "$S/error-upload"
   rm "$STUB_DIR/rclone_fail"; run upload.sh
-  check "clean run with an empty queue also clears the flag" test ! -f "$S/error-upload"
+  check "the next clean run clears the flag" test ! -f "$S/error-upload"
   end_env
 fi
 
@@ -432,91 +389,123 @@ if section "locks"; then
   end_env
 fi
 
-if section "prune"; then
-  new_env
-  mkdir -p "$D/shots/2020-01-01" "$D/shots/$TODAY" "$D/recordings/2020-01-01" "$D/control"
-  echo o > "$D/shots/2020-01-01/old.jpg"; old "$D/shots/2020-01-01/old.jpg"
-  echo o > "$D/recordings/2020-01-01/old.mov"; old "$D/recordings/2020-01-01/old.mov"
-  echo n > "$D/shots/$TODAY/new.jpg"
-  echo o > "$D/control/done-a-1.txt"; old "$D/control/done-a-1.txt"
-  echo o > "$D/control/README.txt"; old "$D/control/README.txt"
-  run upload.sh
-  check "old shot pruned" test ! -f "$D/shots/2020-01-01/old.jpg"
-  check "old recording pruned" test ! -f "$D/recordings/2020-01-01/old.mov"
-  check "empty date folder removed" test ! -d "$D/shots/2020-01-01"
-  check "new shot kept" test -f "$D/shots/$TODAY/new.jpg"
-  check "old done-note pruned" test ! -f "$D/control/done-a-1.txt"
-  check "other files in control/ are never touched" test -f "$D/control/README.txt"
-  check "shots root survives" test -d "$D/shots"
+# ============================================================================
+if section "listen: commands from the web page"; then
+  new_env; start_worker
+  run listen.sh --once
+  eq "idle poll: nothing captured" 0 "$(nshots)"
+  eq "poll reached the Worker" ok "$(cat "$S/worker-reach")"
+  eq "the Worker saw the Mac (paused=no)" no "$(dump | py 'json.loads(d["kv"]["mac"])["paused"]')"
+  eq "status.json posted on the first poll" open "$(dump | py 'json.loads(d["kv"]["status_json"])["lid"]')"
+  hasnt "the Mac token never appears in curl arguments" "$STUB_DIR/curl_calls" "$TOKEN"
+  id=$(wk cmd snap)
+  run listen.sh --once
+  eq "snap: one remote shot in the bucket" 1 "$(find "$D/shots" -name '*-remote.jpg' | wc -l | tr -d ' ')"
+  eq "snap: its thumbnail too" 1 "$(find "$D/thumbs" -name '*-remote.jpg' | wc -l | tr -d ' ')"
+  eq "snap: sent at once, queue empty" 0 "$(nfiles "$Q")"
+  eq "snap: the Worker indexed shot + thumbnail" 2 "$(dump | py 'len([f for f in d["files"] if f["key"].endswith("-remote.jpg")])')"
+  eq "snap: command acked" 1 "$(dump | py 'len([c for c in d["commands"] if c["acked"]])')"
+  eq "last handled id remembered" "$id" "$(cat "$S/last-cmd")"
+  id=$(wk cmd snap); echo "$id" > "$S/last-cmd"; rm -f "$S/last-trigger-remote"
+  run listen.sh --once
+  eq "at most once: an id already handled (ack lost) is not run again" 1 "$(find "$D/shots" -name '*-remote.jpg' | wc -l | tr -d ' ')"
+  eq "...but it is acked" 0 "$(dump | py 'len([c for c in d["commands"] if not c["acked"]])')"
+  wk cmd "snap 7200" >/dev/null
+  run listen.sh --once
+  eq "command older than MARKER_MAX_AGE_MIN: not acted on" 1 "$(find "$D/shots" -name '*-remote.jpg' | wc -l | tr -d ' ')"
+  has "stale command is logged" "$L/listen.log" "not acted on"
+  eq "stale command acked anyway" 0 "$(dump | py 'len([c for c in d["commands"] if not c["acked"]])')"
+  wk cmd pause >/dev/null; run listen.sh --once
+  check "pause: remote-paused state set" test -e "$S/remote-paused"
+  run listen.sh --once
+  eq "paused: the next poll tells the Worker" remote "$(dump | py 'json.loads(d["kv"]["mac"])["paused"]')"
+  wk cmd snap >/dev/null; rm -f "$S/last-trigger-remote"; run listen.sh --once
+  eq "paused: snap is ignored" 1 "$(find "$D/shots" "$Q" -name '*-remote.jpg' | wc -l | tr -d ' ')"
+  has "paused: logged" "$L/listen.log" "ignored because capturing is paused remotely"
+  run trigger.sh space
+  eq "paused: nothing captures" 0 "$(nshots)"
+  mkdir -p "$Q/shots/$TODAY"; echo x > "$Q/shots/$TODAY/20261113-100000-interval.jpg"
+  run upload.sh --now; eq "paused: no uploads" 1 "$(nshots)"
+  rm -rf "$Q/shots"
+  wk cmd resume >/dev/null; run listen.sh --once
+  check "resume: pause lifted" test ! -e "$S/remote-paused"
+  wk cmd "pause 99999" >/dev/null; run listen.sh --once
+  check "an old pause still pauses (the safe direction)" test -e "$S/remote-paused"
+  wk cmd "resume 99999" >/dev/null; run listen.sh --once
+  check "an old resume still resumes" test ! -e "$S/remote-paused"
+  id=$(wk cmd record); run listen.sh --once
+  has "record: the record agent is kickstarted" "$STUB_DIR/calls" "kickstart gui/.*/com.macwatch.record"
+  eq "record: label handed over" "cmd-$id" "$(cat "$S/record-request")"
+  rm -f "$S/record-request"; : > "$STUB_DIR/calls"; mkdir -p "$S/record.lock"
+  wk cmd record >/dev/null; run listen.sh --once
+  hasnt "recording already running: no second kickstart" "$STUB_DIR/calls" "kickstart"
+  rm -rf "$S/record.lock"; touch "$STUB_DIR/launchctl_fail"; wk cmd record >/dev/null; run listen.sh --once
+  check "kickstart failure is an error flag" test -f "$S/error-record"
+  rm "$STUB_DIR/launchctl_fail"
   end_env
 fi
 
-# ============================================================================
-if section "markers"; then
-  new_env
-  mkdir -p "$D/control"; : > "$D/control/snap-now"
-  run upload.sh
-  eq "snap-now file: one remote shot" 1 "$(find "$D/shots" -name '*-remote.jpg' | wc -l | tr -d ' ')"
-  check "snap-now: marker deleted" test ! -e "$D/control/snap-now"
-  eq "snap-now: shot uploaded the same run, queue empty" 0 "$(nfiles "$Q")"
+if section "listen: settings, fast mode, live, failures"; then
+  new_env; start_worker
+  wk settings '{"INTERVAL_SEC":120,"JPEG_QUALITY":10,"STORAGE_SOFT_LIMIT_GB":5}' >/dev/null
+  run listen.sh --once
+  eq "set lines applied (Worker-only settings are not sent)" "INTERVAL_SEC=120 JPEG_QUALITY=10" "$(tr '\n' ' ' < "$S/remote.conf" | sed 's/ $//')"
+  run trigger.sh space
+  has "applied setting is really used (JPEG_QUALITY=10)" "$STUB_DIR/calls" "formatOptions 10 "
+  wk settings '{"KEEP_AWAKE":5,"INTERVAL_SEC":"$(touch /tmp/mw-injected)","MAX_WIDTH":800}' >/dev/null
+  run listen.sh --once
+  eq "the Mac re-checks every value (out of range, text): only MAX_WIDTH=800 kept" "MAX_WIDTH=800" "$(cat "$S/remote.conf")"
+  check "shell injection through a setting did nothing" test ! -e /tmp/mw-injected
+  has "result logged" "$L/listen.log" "applied=1 rejected=2"
+  wk settings '{}' >/dev/null; run listen.sh --once
+  check "no set lines: back to config.env" test ! -e "$S/remote.conf"
+  eq "normal polling every POLL_SLOW_SEC" 20 "$(cat "$S/poll-interval")"
+  wk kv "watching_until +600" >/dev/null; run listen.sh --once
+  eq "page open (fast 1): polling every POLL_FAST_SEC" 2 "$(cat "$S/poll-interval")"
+  wk kv "live_until +600" >/dev/null; : > "$STUB_DIR/calls"; run listen.sh --once
+  eq "live 1: one small frame uploaded to live/" 1 "$(nfiles "$D/live")"
+  has "live frame is 640 px wide, quality 40" "$STUB_DIR/calls" "resampleWidth 640 -s format jpeg -s formatOptions 40"
+  case $(dump | py 'json.loads(d["kv"]["live_key"])["key"]') in live/*.jpg) ok "live frame registered with the Worker" ;; *) bad "live frame registered" ;; esac
+  run listen.sh --once
+  eq "live frames at most every LIVE_EVERY_SEC" 1 "$(nfiles "$D/live")"
+  : > "$STUB_DIR/curl_calls"; touch "$MW_HOME/PAUSE"; run listen.sh --once
+  eq "PAUSE file: no network at all" 0 "$(grep -c . "$STUB_DIR/curl_calls")"
+  rm "$MW_HOME/PAUSE"; echo closed > "$STUB_DIR/lid"; run listen.sh --once
+  eq "lid closed: no polling" 0 "$(grep -c . "$STUB_DIR/curl_calls")"
+  echo open > "$STUB_DIR/lid"
+  good=$(cat "$MW_HOME/.mac-token"); printf '%064d' 7 > "$MW_HOME/.mac-token"
+  run listen.sh --once
+  check "wrong token: error flag" test -f "$S/error-listen"
+  has "wrong token: the fix is in the log" "$L/listen.log" "put-secrets.sh MAC_TOKEN_HASH"
+  run status.sh > "$T/s.txt"; has "status.sh shows the Worker refusing" "$T/s.txt" "REFUSING"
+  printf '%s' "$good" > "$MW_HOME/.mac-token"; run listen.sh --once
+  check "token fixed: error cleared" test ! -f "$S/error-listen"
+  touch "$STUB_DIR/worker_down"; run listen.sh --once; run listen.sh --once
+  check "Worker unreachable: no error flag (just offline)" test ! -f "$S/error-listen"
+  eq "...logged once" 1 "$(grep -c 'cannot reach the Worker' "$L/listen.log")"
+  rm "$STUB_DIR/worker_down"; rm "$MW_HOME/.mac-token"; run listen.sh --once
+  has "no token: says to run setup-remote.sh" "$S/error-listen" "setup-remote.sh"
+  for f in "$L"/*.log; do hasnt "token never logged ($(basename "$f"))" "$f" "$good"; done
   end_env
-  new_env
-  mkdir -p "$D/control/Snap-Now (2)"
-  run upload.sh
-  eq "marker FOLDER, mixed case, extra text: works" 1 "$(find "$D/shots" -name '*-remote.jpg' | wc -l | tr -d ' ')"
-  check "folder marker deleted" test ! -e "$D/control/Snap-Now (2)"
+  new_env; start_worker
+  mkdir -p "$S/listen.lock"; echo $$ > "$S/listen.lock/pid"
+  run listen.sh --once
+  check "a second listen.sh does not start while one runs" test ! -e "$S/worker-reach"
   end_env
-  new_env
-  mkdir -p "$D/control/snap-now" "$D/control/notes"; : > "$D/control/hello.txt"; : > "$D/control/snap-later"
-  old "$D/control/snap-now"
-  run upload.sh
-  eq "stale marker: no shot" 0 "$(find "$D/shots" -name '*.jpg' 2>/dev/null | wc -l | tr -d ' ')"
-  check "stale marker: still deleted" test ! -e "$D/control/snap-now"
-  has "stale marker: logged" "$L/upload.log" "not acted on"
-  check "unrelated names are left alone" test -e "$D/control/hello.txt" -a -d "$D/control/notes" -a -e "$D/control/snap-later"
-  end_env
-  new_env
-  mkdir -p "$D/control"; : > "$D/control/snap-now"; touch "$STUB_DIR/rclone_nodelete"
-  run upload.sh
-  eq "marker that cannot be deleted: NOT acted on" 0 "$(nshots)"
-  has "undeletable marker: loud error" "$L/upload.log" "not acting on it"
-  rm "$STUB_DIR/rclone_nodelete"
-  end_env
-  new_env
-  mkdir -p "$D/control"; : > "$D/control/snap-now"; touch "$STUB_DIR/offline"
-  run upload.sh
-  check "offline: markers are not processed" test -e "$D/control/snap-now"
-  eq "offline: no shot" 0 "$(nshots)"
-  end_env
-  new_env
-  echo closed > "$STUB_DIR/lid"; mkdir -p "$D/control"; : > "$D/control/snap-now"
-  run upload.sh
-  check "lid closed: markers wait (not deleted)" test -e "$D/control/snap-now"
-  end_env
-  new_env
-  run upload.sh
-  check "missing control/ folder is created" test -d "$D/control"
-  end_env
-  new_env
-  mkdir -p "$D/control"; : > "$D/control/snap-now"; : > "$D/control/SNAP-NOW-again"
-  run upload.sh
-  eq "two snap markers in one poll: debounced to one shot" 1 "$(find "$D/shots" -name '*-remote.jpg' | wc -l | tr -d ' ')"
-  eq "both markers deleted" 0 "$(find "$D/control" -mindepth 1 ! -name status.json | wc -l | tr -d ' ')"
-  end_env
-  new_env
-  mkdir -p "$D/control/record-5min"
-  run upload.sh
-  has "record marker: record agent kickstarted" "$STUB_DIR/calls" "kickstart gui/.*/com.macwatch.record"
-  eq "record marker: name handed over" "record-5min" "$(cat "$S/record-request")"
-  check "record marker deleted" test ! -e "$D/control/record-5min"
-  : > "$STUB_DIR/calls"; rm "$S/record-request"
-  mkdir -p "$S/record.lock" "$D/control/record-5min"
-  run upload.sh
-  hasnt "recording already running: no second kickstart" "$STUB_DIR/calls" "kickstart"
-  rm -rf "$S/record.lock"; : > "$STUB_DIR/calls"; touch "$STUB_DIR/launchctl_fail"
-  mkdir -p "$D/control/record-5min"
-  run upload.sh
-  check "kickstart failure is an error flag" test -f "$S/error-record"
+fi
+
+if section "upload: index reported to the Worker"; then
+  new_env; start_worker
+  run trigger.sh space; run upload.sh
+  eq "uploaded shot + thumbnail are indexed" 2 "$(dump | py 'len(d["files"])')"
+  check "nothing left pending" test ! -s "$S/index-pending"
+  rm -f "$S/last-trigger-wake"; run trigger.sh wake; touch "$STUB_DIR/worker_down"; run upload.sh
+  eq "Worker unreachable: the upload still happens" 0 "$(nshots)"
+  eq "...and the index lines are kept for later" 2 "$(grep -c . "$S/index-pending")"
+  has "...logged" "$L/upload.log" "will retry"
+  rm "$STUB_DIR/worker_down"; run upload.sh
+  eq "next run reports them" 4 "$(dump | py 'len(d["files"])')"
+  check "pending file gone" test ! -s "$S/index-pending"
   end_env
 fi
 
@@ -533,6 +522,7 @@ fi
 
 # ============================================================================
 if section "record"; then
+  export MW_NO_UPLOAD=1     # keep recordings in the queue so the tests can look at them
   new_env
   STUB_REC_MAX=1 run record.sh 3 record-5min
   f=$(first_file "$Q/recordings")
@@ -541,9 +531,7 @@ if section "record"; then
   hasnt "never asks for audio" "$STUB_DIR/calls" " -g"
   has "compressed with avconvert preset" "$STUB_DIR/calls" "avconvert --preset Preset1280x720"
   eq "compressed copy is what is queued" 10 "$(wc -c < "$f" | tr -d ' ')"
-  n=$(first_file "$Q/control")
-  case ${n##*/} in done-record-5min-*.txt) ok "done note queued" ;; *) bad "done note" "$n" ;; esac
-  has "done note says what ran" "$n" "recordings/$TODAY"
+  has "the label is logged" "$L/record.log" "(record-5min)"
   check "tmp/ clean afterwards" test "$(nfiles "$MW_HOME/tmp")" = 0
   check "lock released" test ! -d "$S/record.lock"
   end_env
@@ -552,7 +540,6 @@ if section "record"; then
   STUB_REC_MAX=1 run record.sh 3
   eq "avconvert fails, no ffmpeg: original kept" 1 "$(nfiles "$Q/recordings")"
   has "fallback is logged" "$L/record.log" "keeping the original"
-  eq "no marker: no done note" 0 "$(nfiles "$Q/control")"
   end_env
   new_env
   mkdir -p "$S/record.lock"; echo $$ > "$S/record.lock/pid"
@@ -566,7 +553,7 @@ if section "record"; then
   rm "$MW_HOME/PAUSE"
   printf 'marker-from-agent' > "$S/record-request"; cfg RECORD_SEC=5
   STUB_REC_MAX=1 run record.sh --request
-  eq "--request mode reads the marker" 1 "$(find "$Q/control" -name 'done-marker-from-agent-*' | wc -l | tr -d ' ')"
+  has "--request mode reads the label" "$L/record.log" "(marker-from-agent)"
   check "--request mode consumes the request file" test ! -e "$S/record-request"
   end_env
   new_env
@@ -581,7 +568,12 @@ if section "record"; then
   has "partial is logged" "$L/record.log" "stopped early"
   has "clean INT stop worked even from a background job (perl resets SIGINT)" "$STUB_DIR/calls" "screencapture finished early"
   hasnt "no TERM needed" "$L/record.log" "sent TERM"
-  has "done note says partial" "$(first_file "$Q/control")" "partial:   yes"
+  has "log says partial" "$L/record.log" "partial: yes"
+  end_env
+  unset MW_NO_UPLOAD
+  new_env
+  STUB_REC_MAX=1 run record.sh 3
+  eq "without MW_NO_UPLOAD the recording is uploaded at once" 1 "$(nfiles "$D/recordings")"
   end_env
 fi
 
@@ -618,7 +610,7 @@ if section "status"; then
   run trigger.sh space
   run status.sh > "$T/s.txt"
   has "shows last capture" "$T/s.txt" "last capture"
-  has "shows queue" "$T/s.txt" "1 file(s)"
+  has "shows queue (shot + thumbnail)" "$T/s.txt" "2 file(s)"
   touch "$MW_HOME/PAUSE"; run status.sh > "$T/s.txt"
   has "shows PAUSED" "$T/s.txt" "PAUSED"
   end_env
@@ -630,7 +622,7 @@ if section "install / uninstall"; then
   export STUB_DARWIN=1 MW_LAUNCH_AGENTS_DIR=$T/LaunchAgents
   cfg INTERVAL_SEC=420; cfg CONTROL_POLL_SEC=45
   run install.sh > "$T/inst.txt" 2>&1; eq "install exits 0" 0 $?
-  for a in capture upload record; do check "plist $a exists" test -f "$T/LaunchAgents/com.macwatch.$a.plist"; done
+  for a in capture upload record listen; do check "plist $a exists" test -f "$T/LaunchAgents/com.macwatch.$a.plist"; done
   pl() { python3 -c '
 import plistlib,sys
 d=plistlib.load(open(sys.argv[1],"rb"))
@@ -643,14 +635,17 @@ print(eval(sys.argv[2]))' "$T/LaunchAgents/com.macwatch.$1.plist" "$2"; }
   eq "upload: AbandonProcessGroup" True "$(pl upload "d['AbandonProcessGroup']")"
   eq "record: on-demand only (no schedule)" "False" "$(pl record "d['RunAtLoad']")"
   eq "record: --request" "/bin/sh $ROOT/bin/record.sh --request" "$(pl record "' '.join(d['ProgramArguments'])")"
+  eq "listen: runs listen.sh" "/bin/sh $ROOT/bin/listen.sh" "$(pl listen "' '.join(d['ProgramArguments'])")"
+  eq "listen: KeepAlive + RunAtLoad (always polling while logged in)" "True True 30" "$(pl listen "d['KeepAlive'], d['RunAtLoad'], d['ThrottleInterval']" | tr -d '(),')"
   has "logs go to log/" "$T/LaunchAgents/com.macwatch.capture.plist" "$MW_HOME/log/launchd-capture.log"
   has "uses launchctl bootstrap gui/UID" "$STUB_DIR/calls" "launchctl bootstrap gui/$(id -u) $T/LaunchAgents/com.macwatch.capture.plist"
   has "install output mentions Background Items" "$T/inst.txt" "Background Items"
   has "install output says autostart is at LOGIN" "$T/inst.txt" "LOG IN"
   has "install output explains Screen Recording" "$T/inst.txt" "Screen & System Audio Recording"
   has "install output shows the PAUSE kill switch" "$T/inst.txt" "touch $MW_HOME/PAUSE"
+  has "install output says to run setup-remote.sh when there is no token" "$T/inst.txt" "setup-remote.sh"
   run install.sh > /dev/null 2>&1; eq "install is idempotent" 0 $?
-  eq "still exactly three plists" 3 "$(ls "$T/LaunchAgents" | wc -l | tr -d ' ')"
+  eq "still exactly four plists" 4 "$(ls "$T/LaunchAgents" | wc -l | tr -d ' ')"
   echo x > "$Q/keep.jpg"
   run uninstall.sh > "$T/un.txt" 2>&1; eq "uninstall exits 0" 0 $?
   eq "uninstall removes the plists" 0 "$(ls "$T/LaunchAgents" | wc -l | tr -d ' ')"
@@ -668,18 +663,48 @@ print(eval(sys.argv[2]))' "$T/LaunchAgents/com.macwatch.$1.plist" "$2"; }
   end_env
 fi
 
+if section "setup-remote"; then
+  new_env; start_worker
+  rm "$MW_HOME/.mac-token"; mkdir -p "$D"
+  export STUB_REMOTES=none:
+  printf 'K005abcdef\nSECRETAPPKEY0123456789\n' | $SH "$ROOT/bin/setup-remote.sh" > "$T/sr.txt" 2>&1
+  eq "setup-remote exits 0" 0 $?
+  has "rclone b2 remote written" "$STUB_DIR/rclone.conf" "type = b2"
+  has "...with the keyID" "$STUB_DIR/rclone.conf" "account = K005abcdef"
+  hasnt "...and the key only obscured" "$STUB_DIR/rclone.conf" "SECRETAPPKEY0123456789"
+  hasnt "the key never appears in rclone's arguments" "$STUB_DIR/rclone_calls" "SECRETAPPKEY"
+  hasnt "the key is never printed" "$T/sr.txt" "SECRETAPPKEY"
+  eq "rclone config is chmod 600" "-rw-------" "$(ls -l "$STUB_DIR/rclone.conf" | cut -c1-10)"
+  check "a Mac token was created" test -s "$MW_HOME/.mac-token"
+  eq ".mac-token is chmod 600" "-rw-------" "$(ls -l "$MW_HOME/.mac-token" | cut -c1-10)"
+  hasnt "the token is never printed" "$T/sr.txt" "$(cat "$MW_HOME/.mac-token")"
+  h=$(tr -d '\n' < "$MW_HOME/.mac-token" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -d' ' -f1)
+  has "the hash is printed for put-secrets.sh" "$T/sr.txt" "$h"
+  has "it says what to do with it" "$T/sr.txt" "put-secrets.sh MAC_TOKEN_HASH"
+  unset STUB_REMOTES
+  first=$(cat "$MW_HOME/.mac-token")
+  $SH "$ROOT/bin/setup-remote.sh" > "$T/sr2.txt" 2>&1 < /dev/null
+  eq "running it again keeps the token" "$first" "$(cat "$MW_HOME/.mac-token")"
+  has "...and keeps the rclone remote" "$T/sr2.txt" "already exists"
+  end_env
+fi
+
 if section "diagnose and selftest"; then
-  new_env
+  new_env; start_worker
   mkdir -p "$T/fakecfg"; echo 'token = {"access_token":"ya29.SHOULDNEVERAPPEAR000"}' > "$STUB_DIR/rclone.conf"; chmod 600 "$STUB_DIR/rclone.conf"
   run trigger.sh space
   run diagnose.sh > "$T/d.txt" 2>&1; eq "diagnose exits 0" 0 $?
   has "diagnose: macOS version" "$T/d.txt" "26.6.2"
   has "diagnose: lid state" "$T/d.txt" "lid"
   hasnt "diagnose never prints rclone config secrets" "$T/d.txt" "SHOULDNEVERAPPEAR"
+  has "diagnose: Worker poll works" "$T/d.txt" "poll with the Mac token: HTTP 200"
+  hasnt "diagnose never prints the Mac token" "$T/d.txt" "$TOKEN"
   STUB_REC_MAX=2 SELFTEST_AUTO=1 run selftest.sh > "$T/st.txt" 2>&1
   has "selftest prints PASS lines" "$T/st.txt" "PASS"
   hasnt "selftest (stubs, auto-answers) has no FAIL" "$T/st.txt" "FAIL"
   hasnt "selftest never prints rclone config secrets" "$T/st.txt" "SHOULDNEVERAPPEAR"
+  has "selftest checked the Worker" "$T/st.txt" "the Worker accepts this Mac"
+  hasnt "selftest never prints the Mac token" "$T/st.txt" "$TOKEN"
   end_env
 fi
 
@@ -695,9 +720,16 @@ if command -v lua5.4 >/dev/null 2>&1 || command -v lua >/dev/null 2>&1; then
 fi
 
 if command -v node >/dev/null 2>&1; then
-  if section "web dashboard (node, fake Drive)"; then
+  if section "worker (node: core, auth, purge, B2 client)"; then
+    if node "$ROOT/tests/worker_test.mjs" > "${TMPDIR:-/tmp}/mw-worker.out" 2>&1; then
+      ok "worker: $(grep -c '  ok' "${TMPDIR:-/tmp}/mw-worker.out") checks"
+    else
+      bad "worker tests" "$(grep FAIL "${TMPDIR:-/tmp}/mw-worker.out" | head -n 5; tail -n 3 "${TMPDIR:-/tmp}/mw-worker.out")"
+    fi
+  fi
+  if section "web page (node)"; then
     if node "$ROOT/tests/web_test.js" > "${TMPDIR:-/tmp}/mw-web.out" 2>&1; then
-      ok "web dashboard: logic, Drive client and page wiring ($(grep -c '  ok' "${TMPDIR:-/tmp}/mw-web.out") checks)"
+      ok "web page: logic, API client and page wiring ($(grep -c '  ok' "${TMPDIR:-/tmp}/mw-web.out") checks)"
     else
       bad "web dashboard tests" "$(grep FAIL "${TMPDIR:-/tmp}/mw-web.out" | head -n 3; tail -n 3 "${TMPDIR:-/tmp}/mw-web.out")"
     fi
@@ -713,27 +745,19 @@ if [ -n "$REAL_RCLONE" ] && section "real rclone (local backend)"; then
   ln -s "$REAL_RCLONE" "$RB/rclone"
   PATH=$RB:$ORIG_PATH; export PATH
   export RCLONE_CONFIG=$T/rclone.conf RCLONE_CONFIG_TESTREMOTE_TYPE=local
-  cfg RCLONE_REMOTE=testremote; cfg "DRIVE_FOLDER=$T/realdrive"
-  RD=$T/realdrive
-  mkdir -p "$RD/control/snap-now"                       # folder marker, fresh
-  mkdir -p "$RD/control/record-5min"; old "$RD/control/record-5min"   # stale folder marker
-  : > "$RD/control/Snap-Now.txt"                         # file marker
+  cfg RCLONE_REMOTE=testremote; cfg "B2_BUCKET=$T/realbucket"
+  RD=$T/realbucket; mkdir -p "$RD"
   run trigger.sh space
-  mkdir -p "$S"; now_s=$(date +%s); echo "$now_s" > "$S/last-prune"
-  find "$Q" -type f -exec touch -t 202001010000 {} \;   # real rclone really honours --min-age 15s
-  PRUNE_EVERY_SEC=99999 SETTLE_SEC=16 run upload.sh   # (no prune yet: the aged mtime would count as old)
-  eq "real rclone: both fresh markers fired (debounced to one shot) + space shot" 2 "$(find "$RD/shots" -name '*.jpg' | wc -l | tr -d ' ')"
-  check "real rclone: remote shot exists" test "$(find "$RD/shots" -name '*-remote.jpg' | wc -l | tr -d ' ')" = 1
-  eq "real rclone: all marker names gone (only status.json left)" 0 "$(find "$RD/control" -mindepth 1 ! -name status.json | wc -l | tr -d ' ')"
-  hasnt "real rclone: stale record marker did not start a recording" "$STUB_DIR/calls" "kickstart"
-  eq "real rclone: local queue empty" 0 "$(nfiles "$Q")"
-  has "real rclone: stale marker logged as not acted on" "$L/upload.log" "record-5min"
-  mkdir -p "$RD/shots/2020-01-01"; echo o > "$RD/shots/2020-01-01/o.jpg"; old "$RD/shots/2020-01-01/o.jpg"
-  run upload.sh
-  check "real rclone: prune removes old files" test ! -f "$RD/shots/2020-01-01/o.jpg"
-  check "real rclone: prune removes the empty date folder" test ! -d "$RD/shots/2020-01-01"
+  mkdir -p "$Q/other"; echo x > "$Q/other/not-ours.jpg"
+  run upload.sh --now
+  eq "real rclone: shot uploaded with the include filters" 1 "$(find "$RD/shots" -name '*-space.jpg' | wc -l | tr -d ' ')"
+  eq "real rclone: thumbnail uploaded" 1 "$(find "$RD/thumbs" -name '*-space.jpg' | wc -l | tr -d ' ')"
+  check "real rclone: other folders are not uploaded" test ! -e "$RD/other" -a -f "$Q/other/not-ours.jpg"
+  eq "real rclone: index lines kept for the Worker (no Worker configured)" 2 "$(grep -c . "$S/index-pending")"
   hasnt "real rclone: no ERROR in upload.log" "$L/upload.log" "ERROR"
-  # archive-pull against the same fake "Drive"
+  run trigger.sh wake; run upload.sh
+  eq "real rclone: batch mode keeps a fresh shot (min-age 15s)" 1 "$(nshots)"
+  # archive-pull against the same fake bucket
   mkdir -p "$RD/keep/2026-11-01" "$RD/shots/2026-11-02"
   echo kept > "$RD/keep/2026-11-01/a.jpg"; echo shot > "$RD/shots/2026-11-02/b.jpg"
   AR=$T/archive
@@ -743,15 +767,15 @@ if [ -n "$REAL_RCLONE" ] && section "real rclone (local backend)"; then
   has "archive-pull: says it verified" "$T/ar.txt" "verified"
   run archive-pull.sh --dest "$AR" --all > /dev/null 2>&1
   check "archive-pull --all: shots copied" test -f "$AR/shots/2026-11-02/b.jpg"
-  check "archive-pull: Drive untouched without --free-drive" test -f "$RD/keep/2026-11-01/a.jpg" -a -f "$RD/shots/2026-11-02/b.jpg"
+  check "archive-pull: bucket untouched without --free-remote" test -f "$RD/keep/2026-11-01/a.jpg" -a -f "$RD/shots/2026-11-02/b.jpg"
   rm -f "$AR/keep/2026-11-01/a.jpg"
   run archive-pull.sh --dest "$AR" --dry-run > /dev/null 2>&1
   check "archive-pull --dry-run copies nothing" test ! -e "$AR/keep/2026-11-01/a.jpg"
-  echo no | $SH "$ROOT/bin/archive-pull.sh" --dest "$AR" --all --free-drive > /dev/null 2>&1
-  check "--free-drive: answering anything but 'delete' keeps Drive intact" test -f "$RD/keep/2026-11-01/a.jpg"
-  echo delete | $SH "$ROOT/bin/archive-pull.sh" --dest "$AR" --all --free-drive > /dev/null 2>&1
-  check "--free-drive + delete: verified files removed from Drive" test ! -e "$RD/keep/2026-11-01/a.jpg" -a ! -e "$RD/shots/2026-11-02/b.jpg"
-  check "--free-drive: the copies are still here" test -f "$AR/keep/2026-11-01/a.jpg" -a -f "$AR/shots/2026-11-02/b.jpg"
+  echo no | $SH "$ROOT/bin/archive-pull.sh" --dest "$AR" --all --free-remote > /dev/null 2>&1
+  check "--free-remote: answering anything but 'delete' keeps the bucket intact" test -f "$RD/keep/2026-11-01/a.jpg"
+  echo delete | $SH "$ROOT/bin/archive-pull.sh" --dest "$AR" --all --free-remote > /dev/null 2>&1
+  check "--free-remote + delete: verified files removed from the bucket" test ! -e "$RD/keep/2026-11-01/a.jpg" -a ! -e "$RD/shots/2026-11-02/b.jpg"
+  check "--free-remote: the copies are still here" test -f "$AR/keep/2026-11-01/a.jpg" -a -f "$AR/shots/2026-11-02/b.jpg"
   end_env
 fi
 
