@@ -1,292 +1,480 @@
-# PLAN.md
+# PLAN.md: replace Google Drive with Backblaze B2 + a Cloudflare Worker
 
-Decisions by the owner so far (2026-11-15): **Cloudflare R2 is out** (needs a payment card, none available);
-**Google Drive is being dropped completely** (too slow to sync, poor for remote control); the goal is a
-**mild remote monitor**: on-demand screenshot, live-ish view, status, recordings, pause, settings.
+**Audience:** the owner, and the Claude Code instance that will build and deploy this (it runs on the
+owner's Arch machine with a browser and real network access to Cloudflare and Backblaze, which the
+original sandbox did not have). Read `CLAUDE.md` first (rules, layout), then `README.md`.
 
-- **Part A** is a handoff note for a *different* Claude Code (on the owner's Arch machine, with Chrome)
-  to publish the Google OAuth app. **Probably no longer needed**: see its banner.
-- **Part B** is the plan: Backblaze B2 (files) + a free Cloudflare Worker (control plane and website).
-  Nothing in Part B is built yet.
-- **Part C** is a short backlog. **Part D** lists what only the owner can answer.
-
-Last updated 2026-11-15. Repo layout and rules: `CLAUDE.md`. User docs: `README.md`, `web/README.md`.
+Last updated 2026-11-15. Nothing in this plan is built yet.
 
 ---
 
-## Part A: Handoff note for the Claude Code that has Chrome
+## 0. Decisions already made by the owner
 
-> **Banner (2026-11-15): probably skip this part.** Drive is being replaced (Part B), so publishing the
-> Google app only matters as a stopgap. The login done on 2026-11-13 stops working around
-> **2026-11-20** (Testing status). The cheap stopgap is one command on the Mac, run around 11-19/11-20
-> and again a week later if the migration is not finished by then: `rclone config reconnect gdrive:`
-> (click through the browser login). Use this part only if the owner wants Drive to keep working
-> long-term anyway.
+| Topic | Decision |
+|---|---|
+| Storage | **Google Drive is removed completely.** Too slow to sync, poor for remote control. |
+| Cloudflare R2 | **No** (needs a payment card; the owner has none). |
+| Money | **Free only, no card anywhere.** Cloudflare account and Backblaze account are already created. |
+| Login to the website | **Sign in with Google** (identity only). A passphrase is *not* wanted. |
+| History | **Start fresh.** Nothing is copied from Drive. |
+| Google "Publish app" | **Not needed any more** (no Drive scope). Ignore every earlier note about it. |
+| Goal | A **mild remote monitor**: status, on-demand screenshot, live-ish view, recordings, pause, settings, a **file explorer** to download single screenshots on a phone, **purge** of old shots, and a **live storage monitor**. |
+| Branch | Work on `main` (owner's instruction). |
 
-### Goal
+Not in scope, on purpose: remote keyboard/mouse control, waking a sleeping Mac, anything while the Mac is
+asleep/offline/lid closed.
 
-Make the Google OAuth consent screen of the mac-watch project show **Publishing status: In
-production** (not "Testing"), then confirm the Mac's rclone login survives past 7 days.
+---
 
-### Why it matters
+## 1. Who does what
 
-mac-watch uploads to Google Drive through rclone with its **own** Google OAuth client (the shared
-rclone client was rate-limited). A Google OAuth app in **Testing** status makes refresh tokens
-expire after about **7 days**. The login was done on **2026-11-13**, so uploads and phone commands
-will silently stop around **2026-11-20** unless the app is in production. (The Mac's
-`./bin/status.sh` would then show an `AUTH PROBLEM` error. `rclone config reconnect gdrive:` buys
-another week as a stopgap.)
+- **Builder instance (Arch, network, browser):** writes the Worker, the new Mac scripts and the website
+  following this plan, deploys with `wrangler`, and **verifies against the real services** (the first
+  time any of this touches them). Appends to the handoff log (section 12).
+- **Owner:** logins and anything needing a password or 2-step (Cloudflare, Backblaze, Google), pasting
+  secrets *into the terminal prompts* of the setup scripts, and running things **on the Mac**
+  (`git pull`, `./bin/install.sh`, `./bin/selftest.sh`). The Builder cannot test macOS behaviour.
+- **Hard rules:** never print, log, paste in chat or commit an application key, the Mac token, the
+  session secret or `rclone.conf`. Never use `sudo`. Do not touch anything outside the repo on the Mac
+  except `~/Library/LaunchAgents` (see `CLAUDE.md`). Ask before anything destructive on the owner's
+  accounts.
 
-### What the owner saw (from photos of the screen; nothing here was seen first-hand by Claude)
+---
 
-- Google Auth Platform, **Audience** page: *Publishing status: Testing*, user type *External*. The
-  **Publish app** button was **greyed out** with the text *"To publish your app, you must complete
-  your configuration on the Branding page."*
-- **Branding** page: App name `mac-watch`, a user support email and a developer contact email were
-  filled in. **Save** was greyed (nothing unsaved). Logo, home page, privacy policy, terms of
-  service and authorised domains were empty.
-- Reloading the Audience page did not change anything. The **Verification centre** page has not been
-  looked at yet.
-- The browser URL contained `authuser=1`: the owner is signed into **several Google accounts** in that
-  browser. There may also be **more than one Cloud project**: one console screenshot showed a project
-  called "My First Project" with *"You haven't configured any OAuth clients for this project yet"*,
-  yet an OAuth client had been created and works. The owner also said they were made to
-  "create the OAuth client again" at some point. **Prime suspect: Branding/Audience were edited in a
-  different project than the one that owns the working client.**
-- The working client is a **Desktop app** client whose ID starts with `644532895687-` (that number is
-  the Cloud project *number*; read off a photo, so double-check). A client ID is public, not a secret.
+## 2. Owner setup guide (what the owner does, in order, about 30 minutes)
 
-### What to do, in order
+UI wording drifts; the goal of each step matters more than the exact button names.
 
-1. Ask the owner which Google account owns the Cloud project, and make sure Chrome is using that
-   account for the console (use the account switcher; avoid `authuser` guessing).
-2. **Find the right project:** in the console project picker, open each project, and match the one whose
-   *project number* is `644532895687` (Dashboard or Settings shows it). Check that its **Clients** page
-   lists the Desktop client. Do the next steps *in that project*.
-3. Open `Google Auth Platform > Verification centre` and read what it says is missing. Fix those items.
-4. Open **Branding**. Required fields are only app name, user support email, developer contact. If
-   Google insists on more (some projects ask for an authorised domain or links once a *sensitive or
-   restricted* scope is declared), supply the minimum: a home page and privacy link can be the
-   repo's GitHub README page. Do not invent a domain the owner does not own.
-5. Open **Data access**. The rclone remote uses scope `https://www.googleapis.com/auth/drive`
-   (a *restricted* scope). It is fine to leave it undeclared for a personal app, or to add it if the
-   console requires it for publishing. **Do not** add other scopes.
-6. Back on **Audience**, reload, and click **Publish app**. **Ask the owner for a go-ahead in chat
-   first** (it is reversible via "Back to testing", but it changes what Google shows on their login).
-   Confirm the dialog. The status should read **In production**.
-   - Expected and fine: Google keeps showing "Google hasn't verified this app". That only goes away
-     with a full verification, which a one-person app does not need. The 100-user cap is irrelevant.
-7. **Verify on the Mac** (the owner runs these; do not run anything with `sudo`):
-   - `rclone config reconnect gdrive:` and click through the login (Advanced, then continue, then allow Drive).
-   - `./bin/status.sh` shows no `ERROR upload`.
-   - Put a reminder to re-check `./bin/status.sh` on **2026-11-22** (more than 7 days after the login).
-     If it says `AUTH PROBLEM` then, publishing did not take effect; see "If publishing cannot be done".
+### 2.1 Backblaze B2 (bucket, lifecycle, two keys)
 
-### If publishing cannot be done
+1. Backblaze web UI, **Buckets, Create a Bucket**: a globally unique name such as `macwatch-<6 random
+   letters>`, **Private**, encryption on (default), Object Lock **off**. Write the bucket name down.
+2. **Lifecycle settings** on that bucket, custom rules, as a *backstop* only (the Worker enforces the
+   real retention from the owner's setting): for file-name prefixes `shots/`, `thumbs/`, `recordings/`
+   set "days from uploading to hiding" = **30** and "days from hiding to deleting" = **1**; for `live/`
+   set **1** and **1**. **No rule for `keep/`.**
+3. **Application Keys, Add a New Application Key**, restricted to **that bucket only**, twice:
+   - `macwatch-mac`: for the Mac. Read-and-write is the simplest in the UI. Better, if the Builder uses
+     the `b2` CLI: capabilities `listBuckets,listFiles,writeFiles,deleteFiles` (no `readFiles`), then check
+     `rclone move` still works (section 11).
+   - `macwatch-worker`: for the Worker. Read-and-write (it reads, copies for **Keep**, and deletes for
+     **purge**).
+   Each key's secret is shown **once**. Put them straight into the setup prompts (below) or a password
+   manager. **Never into chat.**
 
-Pick one with the owner and note it in the handoff log:
-1. Stay in Testing and run `rclone config reconnect gdrive:` **weekly** (set a recurring reminder).
-2. Finish the Backblaze B2 + Cloudflare Worker plan in **Part B**, which removes Google Drive and this problem entirely.
+### 2.2 Cloudflare (Worker + D1)
 
-### Hard rules for the other Claude
+1. Choose the account's `workers.dev` subdomain if not set yet (Workers & Pages, first-time onboarding).
+2. On the Arch machine: `npm install -g wrangler` (or use `npx wrangler`), then `wrangler login`
+   (browser consent).
+3. The Builder then runs: `wrangler d1 create macwatch` (copy the printed `database_id` into
+   `worker/wrangler.toml`), `wrangler d1 execute macwatch --remote --file worker/schema.sql`,
+   `wrangler secret put ...` for each secret in section 6.4, and `wrangler deploy`.
+   The URL is `https://butter-bot.<subdomain>.workers.dev` (worker name `butter-bot`).
+4. **Confirm no card prompt appeared** for Workers, D1 or cron triggers. If any step demands a card, stop
+   and tell the owner (see section 11).
 
-- **Never print, paste, log or commit** the client *secret*, any token, or `rclone.conf`. If the console
-  shows a secret, do not copy it into chat or a file.
-- **Do not delete or regenerate the existing Desktop client** unless the owner agrees: that breaks the
-  Mac's login. If a new client has to be made, the owner re-runs `./bin/setup-oauth.sh` on the Mac to
-  store it.
-- Ask the owner to do any password, 2-step verification or CAPTCHA step. Do not try to work around them.
-- Do not change anything outside the Google console for this task. The Mac, Drive and the repo are
-  out of scope here.
-- Keep it to the minimum: no new scopes, no extra test users, no billing or free-trial sign-up
-  (the "$300 credit" banner is a trap for this purpose; ignore it).
+### 2.3 Google sign-in client (identity only, no Drive)
 
-### Handoff log (the other Claude appends here)
+1. Google Cloud console, the project the owner already has: **APIs & Services, Credentials, Create
+   credentials, OAuth client ID, Web application**.
+2. **Authorised JavaScript origins:** `https://butter-bot.<subdomain>.workers.dev` and
+   `http://localhost:8787` (for `wrangler dev`). No redirect URI is needed (Google Identity Services).
+3. Copy the **Client ID** (public). Ignore the secret; it is not used.
+4. **OAuth consent screen:** user type External, add **the owner's own Google account as a Test user**.
+   Add **no** extra scopes (the defaults `openid email profile` are enough). Publishing is not required
+   for sign-in; the Drive scope is gone, so the 7-day Testing expiry no longer matters.
+5. The Worker is told the client ID (`GOOGLE_CLIENT_ID`, a plain variable) and the **one allowed e-mail**
+   (`ALLOWED_EMAIL`, a secret so it is not in the repo).
+
+### 2.4 On the Mac (after the Builder says it is deployed)
+
+```sh
+git pull
+./bin/setup-remote.sh      # asks for the Worker URL and the Mac's B2 key; creates the Mac token
+./bin/install.sh           # adds the "listen" agent; removes the Drive agents' marker polling
+./bin/selftest.sh
+```
+
+`setup-remote.sh` prints the **SHA-256 of the new Mac token** (never the token itself) for the Builder to
+store with `wrangler secret put MAC_TOKEN_HASH`.
+
+---
+
+## 3. Architecture
+
+```
+ Mac ──rclone (b2)──────────────► Backblaze B2 (private bucket)
+ Mac ◄──poll 20 s / 2 s────────► Worker (butter-bot) + D1 ◄──cookie── Phone / laptop browser
+                                  ├─ serves the website (static assets)
+                                  └─ streams images/videos from B2 to the page (no B2 key in the browser)
+```
+
+- **Bytes** (shots, thumbnails, recordings, live frames) live in **B2**. **Everything small** (commands,
+  status, settings, the file index, counters) lives in **D1**.
+- The Mac never polls B2 and the website never lists B2: B2's free daily transaction allowance is small
+  (about 2,500 each of downloads and list-type calls per day; confirm live), so the file index is kept in
+  D1 and only reconciled by a daily cron job.
+- The Mac and the Worker never connect to each other except through the Mac's outbound HTTPS polling.
+
+### Rejected options (do not revisit without a reason)
+
+R2 (needs card), Drive (slow, scopes), Netlify (static only on free; functions burn credits when polled),
+Cloudflare Access (could not confirm no-card; the Worker does its own login), Tailscale-only (nothing
+works when the Mac is asleep; may come later as an add-on for true real-time view).
+
+---
+
+## 4. Latency: adaptive polling
+
+- The Mac polls `GET /mac/poll` every **20 s** normally.
+- When the owner's page is open it pings `POST /api/watching` every 30 s; the Worker keeps
+  `watching_until = now + 600 s`. While that is in the future the poll reply contains `fast 1` and the Mac
+  polls every **2 s**. "Screenshot now" then shows up in about 3 to 6 s.
+- **Live view** (button on the page) sets `live_until = now + 600 s`; the reply contains `live 1` and the
+  Mac captures a small frame (640 px wide, JPEG quality about 40, tens of KB) every **4 s**, uploads it with
+  rclone to `live/<timestamp>.jpg` and calls `POST /mac/live`. Off by default. Stops 10 minutes after the
+  page was last open or on `live-off`.
+- Budget on the free plan (100k Worker requests/day): idle polling 4,320/day, one fast session about 300,
+  page traffic extra. D1 writes per poll are at most 1 (`last_seen` is updated at most once a minute).
+
+---
+
+## 5. Wire protocol
+
+All responses `Cache-Control: no-store`. Errors are JSON `{"error":"..."}` for the website, a bare status
+code for the Mac. **Never** put a B2 key, token or secret in any response.
+
+### 5.1 Mac to Worker (`Authorization: Bearer <mac-token>`; the Worker compares SHA-256 hashes in constant time)
+
+`GET /mac/poll?paused=no|local|remote` returns **plain text, one item per line**, nothing else:
+
+```
+fast 1
+live 0
+cmd 41 snap 1763200000
+cmd 42 record 1763200010
+set INTERVAL_SEC=120
+set JPEG_QUALITY=50
+```
+
+- `cmd <id> <name> <unix-time>`: `name` is one of `snap record pause resume`. The Mac **ignores** commands
+  older than `MARKER_MAX_AGE_MIN` (except `pause` / `resume`, which stay valid, as today), executes each
+  `id` at most once (remember the last handled id in `state/last-cmd`), then calls `/mac/ack`.
+- `set KEY=number`: the **full** current settings set. The Mac validates every line with the existing
+  strict parser and range table (`remote_bounds` in `bin/lib.sh`); anything else is dropped. An absent
+  `set` block means "no overrides": delete `state/remote.conf`.
+- Unknown lines are ignored (forward compatibility).
+
+`POST /mac/ack` body `<id>` (idempotent). `POST /mac/status` body is `state/status.json` (extend it with
+`diskFreeGB`, `queueMB`, `localShots`). `POST /mac/index` body is lines `<key> <bytes> <reason>` for files
+that were **verifiably uploaded** (taken from the queue listing before `rclone move`, minus what is still
+queued after). `POST /mac/live` body `<key>`.
+
+### 5.2 Website to Worker (session cookie + header `X-MW: 1`; `SameSite=Strict; HttpOnly; Secure`)
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /auth/config` | `{clientId}` for the Google button (public) |
+| `POST /auth/google` `{credential}` | verify the Google ID token (section 8), set the session cookie |
+| `POST /auth/logout` | clear the cookie; bump `session_epoch` to invalidate all sessions |
+| `GET /api/status` | latest status.json, `lastSeen`, `watching`, `live`, paused state |
+| `GET /api/storage` | the storage monitor payload (section 7.3) |
+| `GET /api/days?kind=shots|recordings|keep` | days with file count and bytes, newest first |
+| `GET /api/files?day=YYYY-MM-DD&kind=...&after=<cursor>&limit=60` | file page (name, bytes, reason, time) |
+| `GET /img/<key>` | inline stream of one object (thumbnails, previews, video with `Range`) |
+| `GET /dl/<key>` | same object as an **attachment** with a clean file name (phone download) |
+| `POST /api/command` `{name}` | `snap record pause resume live-on live-off` |
+| `GET|PUT /api/settings` | the numbers in section 7.4, validated server-side with the same ranges |
+| `POST /api/keep` `{keys[]}` | server-side copy to `keep/<day>/<name>`, then delete the original |
+| `POST /api/purge` | section 7.2 |
+| `GET /api/live` | `{key, taken}` of the newest live frame, if any |
+| `POST /api/watching` | extend fast mode |
+
+**Key whitelist everywhere a key is accepted:** `^(shots|thumbs|recordings|keep)/\d{4}-\d{2}-\d{2}/[A-Za-z0-9._-]+\.(jpg|mov)$`
+or `^live/[A-Za-z0-9._-]+\.jpg$`. No `..`, no leading `/`, no percent-decoding games (decode once, then
+match).
+
+---
+
+## 6. Data
+
+### 6.1 D1 schema (`worker/schema.sql`)
+
+```sql
+CREATE TABLE files (
+  key      TEXT PRIMARY KEY,           -- e.g. shots/2026-11-15/20261115-120301-space.jpg
+  kind     TEXT NOT NULL,              -- shots | thumbs | recordings | keep | live
+  day      TEXT NOT NULL,              -- YYYY-MM-DD ('' for live)
+  name     TEXT NOT NULL,
+  bytes    INTEGER NOT NULL,
+  reason   TEXT NOT NULL DEFAULT '',
+  uploaded INTEGER NOT NULL            -- unix time the Worker learned about it
+);
+CREATE INDEX files_by_day ON files(kind, day, name);
+CREATE TABLE commands (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  name    TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  acked   INTEGER
+);
+CREATE TABLE kv (k TEXT PRIMARY KEY, v TEXT NOT NULL, updated INTEGER NOT NULL);
+  -- status_json, settings (the 'set' lines), last_seen, watching_until, live_until, live_key,
+  -- b2_auth (token, apiUrl, downloadUrl, expiry), session_epoch
+CREATE TABLE usage (day TEXT PRIMARY KEY, worker_requests INTEGER NOT NULL DEFAULT 0, b2_downloads INTEGER NOT NULL DEFAULT 0);
+```
+
+Request counters are **sampled** (add 10 with probability 1/10) to keep D1 writes low. They are estimates
+and are labelled so on the page.
+
+### 6.2 Object layout in B2
+
+```
+shots/YYYY-MM-DD/<YYYYMMDD-HHMMSS-reason>.jpg        full screenshot (as now)
+thumbs/YYYY-MM-DD/<same name>.jpg                    320 px wide, about 15 KB (gallery uses these)
+recordings/YYYY-MM-DD/<...>-rec.mov
+keep/YYYY-MM-DD/<name>                               never purged automatically
+live/<YYYYMMDD-HHMMSS>.jpg                           live frames, deleted after 1 day
+```
+
+`capture.sh` also writes the thumbnail (`sips --resampleWidth 320`) to `queue/thumbs/DATE/` so the gallery
+and explorer never download full-size images just to show a grid.
+
+### 6.3 Mac files
+
+- `config.env`: remove `RCLONE_REMOTE=gdrive`/`DRIVE_FOLDER`; add `WORKER_URL=` (public), `RCLONE_REMOTE=b2`,
+  `B2_BUCKET=`. `.mac-token` (chmod 600, git-ignored) holds the Mac token.
+- Remote settings whitelist (`remote_bounds` in `bin/lib.sh`, mirrored in `web/logic.js`, **tests check they
+  match**): keep today's 12 and add the Worker-side ones only on the Worker (`RETENTION_DAYS`,
+  `STORAGE_SOFT_LIMIT_GB`; the Mac ignores them).
+
+### 6.4 Worker secrets and variables
+
+Secrets (`wrangler secret put`): `SESSION_SECRET` (32 random bytes), `MAC_TOKEN_HASH` (SHA-256 hex),
+`ALLOWED_EMAIL`, `B2_KEY_ID`, `B2_APP_KEY` (the **worker** key), `B2_BUCKET`.
+Plain vars in `wrangler.toml`: `GOOGLE_CLIENT_ID`.
+
+---
+
+## 7. Features
+
+### 7.1 File explorer (phone-first)
+
+- Roots: **Screenshots**, **Recordings**, **Keep**. A root lists **days** (count, size), newest first; a day
+  lists **files** newest first with a thumbnail, time, reason (`space`, `interval`, `remote`, ...) and size.
+  Paginated with a cursor, 60 per page, lazy-loaded thumbnails.
+- Tap a file: viewer with the full image (or the video, with seeking via `Range`), **Download**
+  (`/dl/<key>`, a normal link so phones save it), **Keep**, **Delete**.
+- Select mode (long-press): Download (one at a time through the browser; no server-side zip), Keep, Delete.
+- Always works without JavaScript heroics: links for downloads, plain `<img src="/img/...">` for thumbnails.
+
+### 7.2 Purge
+
+- `POST /api/purge` `{mode:"keys"|"day"|"olderThanDays", keys?, day?, days?, kinds?, dryRun}`.
+- Always run **`dryRun:true` first** (the page does): the reply says how many files and how many MB would be
+  deleted. The page asks the owner to confirm showing those numbers. `keep/` is **never** touched unless the
+  request names keep keys explicitly. `live/` is not part of purge (expires on its own).
+- Deletion = find the B2 version (`b2_list_file_names` for the exact key to get its `fileId`), then
+  `b2_delete_file_version`, then delete the D1 row. Run in small batches (the free plan has limited CPU and
+  subrequests per invocation); the endpoint returns a cursor so the page can continue.
+- A cron job applies the **retention setting** the same way (default 14 days) and a **storage guard**
+  (section 7.3).
+
+### 7.3 Live storage monitor
+
+`GET /api/storage` returns, computed from D1 (reconciled daily against a real B2 listing):
+
+- B2 used vs the **10 GB free allowance**, with a bar that turns amber at 70 % and red at 90 %.
+- Breakdown by kind (shots, thumbs, recordings, keep, live), file counts.
+- Bytes per day for the last 14 days, average growth per day over the last 7, and **days until the soft
+  limit** at that rate.
+- The Mac: `diskFreeGB`, `queueMB`, `queueFiles` from the latest status.
+- Estimated usage today: Worker requests of 100k, B2 downloads of the daily allowance (amber at 80 %).
+- The page refreshes this panel every 30 s while visible.
+
+**Storage guard (cron, every 15 min):** if used > `STORAGE_SOFT_LIMIT_GB` (default 8, range 1 to 9), delete
+the oldest **non-keep** days until used is 1 GB under the limit. This is how "free only, no card" stays true.
+The daily reconcile job lists the whole bucket (about 9 pages of 1000 for a month of shots) and fixes any
+drift between D1 and B2.
+
+### 7.4 Settings from the page
+
+The existing numeric whitelist (screenshot interval, spacebar gap, JPEG quality, width, record seconds,
+upload batch seconds, keep-awake, marker age, ...) plus the Worker-side `RETENTION_DAYS` (3 to 365) and
+`STORAGE_SOFT_LIMIT_GB`. Numbers only, ranges enforced in both places.
+
+### 7.5 Status card
+
+As today plus: how long since the Mac was **seen** (green under 8 min, amber under 20, red above, with the
+explanation "asleep, offline, lid closed, or PAUSE file"), watching/live state, and the pause state (a local
+`PAUSE` file cannot be lifted from the page).
+
+---
+
+## 8. Login (Sign in with Google, identity only)
+
+1. The page loads `https://accounts.google.com/gsi/client`, shows the Google button with the client ID from
+   `/auth/config`.
+2. Google returns an **ID token** (a signed JWT). The page POSTs it to `/auth/google`.
+3. The Worker verifies it **itself**: fetch and cache Google's public keys
+   (`https://www.googleapis.com/oauth2/v3/certs`), check the RS256 signature with WebCrypto, `iss` is
+   `https://accounts.google.com` or `accounts.google.com`, `aud` equals `GOOGLE_CLIENT_ID`, `exp` is in the
+   future, `email_verified` is true, and `email` equals `ALLOWED_EMAIL` (compare lower-cased, constant
+   time). Anything else: 403 with no detail.
+4. On success it sets a signed session cookie (HMAC with `SESSION_SECRET`, 14 days, includes
+   `session_epoch`), `HttpOnly; Secure; SameSite=Strict; Path=/`.
+5. Every `/api/*`, `/img/*`, `/dl/*` request checks the cookie. State-changing requests also need the
+   `X-MW: 1` header (blocks cross-site form posts) and a JSON content type.
+6. Logout bumps `session_epoch`, which kills every session.
+
+Content-Security-Policy on every response: `default-src 'self'; script-src 'self'
+https://accounts.google.com/gsi/client; connect-src 'self' https://accounts.google.com; img-src 'self'
+blob: data:; media-src 'self' blob:; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style;
+frame-src https://accounts.google.com/gsi/; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`.
+Plus `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex`.
+
+---
+
+## 9. Mac-side change list
+
+| Today | Change |
+|---|---|
+| `upload.sh` polls Drive `control/`, parses markers | **delete** marker/config/Drive code; keep queue cap, online check, locks, flush, backoff |
+| (none) | **`bin/listen.sh`**: persistent loop (new LaunchAgent `com.macwatch.listen`, `KeepAlive`, `RunAtLoad`): poll, run commands, apply `set` lines, ack, adaptive sleep, live frames. Honours `gate()` and `PAUSE` exactly as `trigger.sh` does |
+| (none) | **`bin/api.sh`**: `curl` wrappers (timeouts, retries, token from `.mac-token`, never echoes it) |
+| `rclone move` to `gdrive:` | `rclone move` to `b2:$B2_BUCKET/...` with `--min-age 15s`; kinds `shots thumbs recordings`; then `POST /mac/index` |
+| `rclone delete` prune | **removed**; retention is the Worker's job |
+| `report.sh` writes status.json, `upload.sh` copies to Drive | `report.sh` adds disk/queue fields; `listen.sh` POSTs it every 5 min and on change |
+| `capture.sh` | also writes the 320 px thumbnail into `queue/thumbs/DATE/` |
+| `setup-drive.sh`, `setup-oauth.sh` | replaced by **`bin/setup-remote.sh`** (prompts for Worker URL and the Mac's B2 key id/secret with hidden input, creates the token, writes the rclone `b2` remote, `chmod 600`, prints the token hash only) |
+| `archive-pull.sh` | works with the `b2` remote (read-capable key needed on the archive laptop: the owner makes a third key for it) |
+| `install.sh`, `uninstall.sh`, `status.sh`, `diagnose.sh`, `selftest.sh` | add the listen agent; status shows Worker reachability, last poll, command backlog; selftest checks a real round trip |
+| `web/` (Drive client) | rewritten, section 10; `netlify.toml` and the Netlify site are deleted |
+
+Unchanged: `lib.sh` gate/locks/debounce/`remote_bounds`, `trigger.sh`, `record.sh`, `heartbeat.sh`,
+Hammerspoon files and the Hammerspoon login agent, the local `PAUSE` semantics.
+
+Remote **pause/resume** keep their meaning: remote pause stops capture/record/upload but `listen.sh` keeps
+polling so **resume** works; the local `PAUSE` file stops **everything** including polling.
+
+---
+
+## 10. Website
+
+Static files served by the Worker (Workers Static Assets). Plain HTML/CSS/JS, no framework, phone-first,
+dark mode, large tap targets, `textContent` only (never inject HTML from data). Screens:
+
+1. **Sign in** (Google button).
+2. **Home:** status card, command buttons (Screenshot now, Record, Pause/Resume, Live), the latest shot,
+   storage meters (compact).
+3. **Explorer** (section 7.1) with Keep / Download / Delete / Purge.
+4. **Storage** (section 7.3) full panel.
+5. **Settings** (section 7.4).
+
+`web/logic.js` (settings table, health, name parsing) is reused; `web/drive.js` becomes `web/api.js`.
+
+---
+
+## 11. Things to VERIFY LIVE (not confirmable from the original sandbox)
+
+1. Workers, D1, cron triggers and Static Assets all work on the free plan **with no card**; read the current
+   free limits (D1 rows read/written per day were not found in official docs; KV is **not** used because
+   it allows only 1,000 writes/day).
+2. Backblaze bucket creation and application keys need **no card**; read the actual free storage and the
+   daily free transaction allowances (download, list); confirm what happens when the 10 GB is exceeded
+   with no card (so the storage guard threshold is safe).
+3. The Mac key's reduced capability set (`listBuckets,listFiles,writeFiles,deleteFiles`) is enough for
+   `rclone move` to a `b2` remote; if not, use the UI "Read and Write" key restricted to the bucket and
+   note it in the log.
+4. The Cache API generally does **not** work on `*.workers.dev`; rely on browser caching
+   (`Cache-Control: private, max-age=...` on immutable shots/thumbs) and the thumbnails instead.
+5. Google sign-in works in "Testing" status with only the owner as a test user (basic scopes).
+6. `wrangler dev` plus a real B2 bucket works locally on Arch; use it for the first end-to-end run.
+
+If 1 or 2 fails because of a card requirement, **stop** and tell the owner: the fallback is the
+Tailscale-based design (`Part C`, below), or staying on Drive with the weekly reconnect.
+
+---
+
+## 12. Work breakdown (do in order; each ends with `make check` green and a commit on `main`)
+
+- **W0.** Read `CLAUDE.md`, run `make check` once to see the baseline (242 checks). Do section 11 items
+  1, 2, 6 with the owner present. Record findings in the log below.
+- **W1. Worker core.** `worker/core.js` (pure functions over a small storage/B2 interface), `worker/index.js`
+  (thin Cloudflare glue), `worker/schema.sql`, `wrangler.toml`. Auth, poll/ack/status/index/live,
+  commands + expiry, settings validation, files/days, `/img`, `/dl`, keep, purge, storage, watching, cron
+  jobs. **Node tests** with in-memory fakes (`tests/worker_test.js`): auth (bad/expired/wrong-audience
+  tokens, wrong e-mail), cookie tampering, CSRF header, key whitelist and traversal, commands expire,
+  settings ranges, poll reply format, purge dry-run vs real, keep copy, storage maths, guard picks the
+  oldest non-keep day, no response ever contains a secret.
+- **W2. Mac side.** `api.sh`, `listen.sh`, `setup-remote.sh`, `upload.sh` rewrite, `capture.sh` thumbnails,
+  `report.sh` fields, `install.sh` (listen agent), `status.sh`, `diagnose.sh`, `selftest.sh`. Tests: a
+  **node HTTP server wrapping `worker/core.js`** on localhost; the shell tests run the **real Mac scripts
+  and real `curl`** against it (poll, command handling and expiry, ack, fast mode, set lines, rejected
+  lines, token rejection, offline behaviour, pause/resume semantics, `PAUSE` stops polling). rclone tests
+  keep using the `local` backend as a stand-in for B2.
+- **W3. Website.** `web/api.js` and the five screens. Node tests: wiring (every `$(id)` exists), no
+  `innerHTML`, CSP present, settings table matches the shell, API client against the fake server.
+- **W4. Deploy + live verification** (owner present for logins): `wrangler deploy`, sign in, take a
+  screenshot from the phone, download one file, purge a test day, watch the storage panel move.
+- **W5. Cut over on the Mac** (owner runs the commands), watch `./bin/status.sh` for a day.
+- **W6. Remove Drive:** owner revokes the rclone token at the Google account permissions page and deletes
+  the Drive OAuth clients; delete `web/drive.js`, `bin/setup-oauth.sh`, `bin/setup-drive.sh`, the old
+  marker/Drive code and its tests, `netlify.toml`; delete the Netlify site; update `README.md`,
+  `web/README.md`, `CLAUDE.md`; mark this plan done.
+
+**Definition of done:** `make check` green under dash and bash `--posix`; the Mac's `selftest.sh` passes on
+the real Worker; from the owner's phone: status, screenshot-now in under 10 s with the page open, Live,
+download a single screenshot, purge with preview, and the storage meter all work.
+
+---
+
+## 13. Security checklist (verify before calling W4 done)
+
+- [ ] No endpoint returns or logs a B2 key, the Mac token, `SESSION_SECRET` or `ALLOWED_EMAIL`.
+- [ ] Every `/api`, `/img`, `/dl` route rejects a missing/forged/expired cookie; state-changing routes
+      reject a missing `X-MW` header.
+- [ ] Key whitelist regex used everywhere a key is accepted; tests for `..`, encoded `..`, leading `/`,
+      other buckets, other prefixes.
+- [ ] Mac routes accept only the Mac token; the Mac token cannot read images or call `/api`.
+- [ ] Settings can only be numbers in ranges; `set` lines on the Mac go through the strict parser.
+- [ ] `keep/` survives retention, the storage guard and `purge` by day/age.
+- [ ] CSP and the other headers in section 8 present on every response.
+- [ ] Login lockout is not needed (Google does auth), but ID-token verification failures are logged without
+      the token.
+- [ ] Cloudflare and Backblaze accounts have 2-step verification on (owner).
+
+---
+
+## 14. Risks
+
+- This is the **largest untested-against-reality change so far**; budget for a debugging round at W4.
+- Free-tier terms can change; the storage guard and the page's meters exist so nothing silently overruns.
+- Anything while the Mac sleeps is invisible: the page can only say "last seen X ago". `KEEP_AWAKE=1` plus
+  the charger is the owner's call.
+- A public Worker fronts private data: keep it small, whitelist-only, covered by the tests above.
+
+---
+
+## Part C. Backlog and alternatives
+
+- **"Mac went quiet" push alert:** cron job checks status age; send a free push (ntfy.sh) when a Mac that
+  reported awake/lid-open/not-paused goes silent for 20 minutes.
+- **Tailscale add-on:** true real-time view when the Mac is awake (no cloud hop). Also the fallback if
+  Cloudflare or Backblaze turn out to need a card.
+- **`bin/update.sh`:** `git pull`, re-run `install.sh`, restart agents.
+- **Frontmost app name** in status (needs an extra macOS permission; opt-in).
+- **Daily timelapse** with `ffmpeg`; **zip download of a day** (client-side).
+- **Idle-time trigger** (`HIDIdleTime`) if Hammerspoon proves flaky.
+
+---
+
+## Handoff log (the Builder instance appends here)
 
 ```
 date / who:
-what was found:
-what was changed:
-current publishing status:
-anything the owner still has to do:
+what was verified live (section 11):
+what was built / changed:
+deviations from this plan and why:
+what the owner still has to do:
 ```
-
----
-
-## Part B: Replace Google Drive with Backblaze B2 + a free Cloudflare Worker
-
-### What "mild remote monitor" means (and does not)
-
-**Yes:** see whether the Mac is alive (lid, battery, power, Wi-Fi, queue, last shot, errors); take a
-screenshot **on demand** and get it back in seconds; a **live-ish view** (a fresh low-resolution frame
-every few seconds while the page is open); start/stop recordings; pause/resume; change settings;
-browse history by day; **Keep** things for archiving; later, an alert when the Mac goes quiet.
-
-**No (on purpose):** remote keyboard/mouse control (that is remote desktop, a very different security
-problem), waking a sleeping Mac (impossible over the internet without extra hardware), or anything
-while the Mac is asleep, offline or has the lid closed. `KEEP_AWAKE=1` plus the charger is the answer to
-"I want it reachable".
-
-### Where it is "fronted": Cloudflare Workers, free plan
-
-A **Worker** is a small program Cloudflare runs for you. Its free plan has no card, gives a
-`something.workers.dev` address (no domain needed) and about 100k requests a day. One Worker serves:
-
-1. the **website** (static page),
-2. the **API** the website uses (login, list, commands),
-3. the **API the Mac uses** (poll for commands, report status).
-
-State lives in **D1** (Cloudflare's free SQLite): commands, status, settings, the index of shots.
-**Image and video bytes live in Backblaze B2** (free 10 GB; Backblaze's own pages say no card is needed
-to sign up). The Worker reads B2 and streams images to the page; the browser never holds a storage key.
-
-```
- Mac ──rclone──────────────► Backblaze B2 (private bucket)    shots/ recordings/ keep/ live/
- Mac ◄──poll / status──────► Worker + D1  ◄── cookie ── Phone/Laptop browser
-                              └─ streams images from B2 for the page
-```
-
-Why not the other places (so nobody re-litigates it):
-
-| Option | Verdict |
-|---|---|
-| Cloudflare R2 | needs a card. Out. |
-| Cloudflare Access (login wall) | free plan exists, but I could not confirm it needs no card; not needed, the Worker does its own login |
-| Netlify | static only on the free plan (password protection is paid); functions cost credits per call, polling would burn them. Page moves to the Worker |
-| Google Drive | slow, 7-day token expiry, whole-Drive permission, rate limits. Being removed |
-| **Tailscale + a tiny server on the Mac** | genuinely good for **true real-time** view (no cloud, no polling) but history lives only on the Mac, so it is **useless when the Mac is asleep/offline**, which is exactly when you want to know why. Possible later as an add-on (Part C) |
-
-### How the control feels fast (adaptive polling)
-
-Worker free plan cannot hold a connection open for push, so the Mac **polls** a tiny endpoint:
-
-- **Idle:** every **20 s**. A command typed into the page reaches the Mac in at most about 20 s.
-- **While you have the page open:** the page pings the Worker, which flags "watching" for 10 minutes. The
-  Mac's reply to its next poll says `fast`, and it then polls every **2 s**. "Screenshot now" then
-  arrives in a few seconds: command seen (~1-2 s), shot taken, uploaded, shown (~3-6 s total).
-- **Live view:** in fast mode, `live` asks the Mac for a small frame (about 640 px wide, low quality, tens
-  of KB) every 3-5 s, uploaded straight to B2 under `live/` (lifecycle rule deletes them after a day) and
-  announced to the Worker. It stops 10 minutes after the page was last open. Cost: battery and a few MB
-  per minute of viewing; it is off unless you open the page and press **Live**.
-
-Request budget (free plan 100k/day): 20 s idle polling = 4,320/day; one 10-minute fast session = 300;
-plus page calls. Well inside, with room for the page being open a lot. D1 reads/writes per poll are 1-2
-small rows. **Verify the current D1 daily limits at signup** (I could not find an official number for rows
-written per day; KV allows only 1,000 writes/day, which is why KV is not used for this).
-
-### The protocol (line-based so the Mac's `sh` can parse it safely)
-
-Mac to Worker, all `Authorization: Bearer <mac-token>`:
-
-- `GET  /mac/poll?v=<version>&st=<paused|ok>` returns plain text lines, nothing else:
-  `fast 1|0`, `cmd <id> snap|record|pause|resume|live-on|live-off <unix-time>`,
-  `set KEY=number` (full current set; absent means "use config.env"). The Mac validates every line
-  with strict patterns (as `apply_remote_config` does today) and ignores anything else.
-- `POST /mac/ack`: `<id>` done (idempotent; commands expire after `MARKER_MAX_AGE_MIN`).
-- `POST /mac/status`: the `status.json` we already produce (sizes are small), every 5 min and on change.
-- `POST /mac/index`: after a successful rclone upload, the new keys + sizes, so the website lists from
-  D1 and **never lists B2** (B2's free tier counts list calls).
-- `POST /mac/live`: `{key}` of the newest live frame.
-
-Website to Worker (cookie session): `GET /api/status`, `GET /api/days`, `GET /api/day/<date>`,
-`GET /img/<key>` (streams from B2, `Cache-Control` long for immutable shots), `POST /api/command`,
-`GET|PUT /api/settings`, `POST /api/keep` (server-side copy to `keep/`), `POST /api/watching`.
-Everything is **whitelist-only**: key names are checked against `^(shots|recordings|keep|live)/...`,
-no `..`, commands from a fixed list, settings through the same range table as the Mac.
-
-### Security model
-
-- **Login to the website (owner decides, Part D):** (a) **passphrase** the Worker checks against a stored
-  hash, with lockout after failed tries, signed `HttpOnly; Secure; SameSite=Strict` cookie, or (b)
-  **Sign in with Google** (identity only, scope `email`; no Drive scope, so none of the Publish/verification
-  pain; Worker verifies the ID token and an e-mail allow-list). Recommendation: **start with (a)**, it works
-  on day one with nothing from Google; add (b) later if wanted.
-- **Mac token:** random 256-bit, stored in a `chmod 600` file in the repo folder (git-ignored), only a hash
-  stored at the Worker. It can poll, ack, report. It **cannot read images or list anything**.
-- **B2 keys:** the Mac gets an application key limited to **one bucket** and no read permission (list +
-  write only, enough for `rclone move`); the Worker gets a separate **read** key. Nothing has "whole
-  account" rights. (Verify the exact capability names when creating keys in the Backblaze console.)
-- **Hard spending cap:** with no card on file Backblaze and Cloudflare cannot bill you. If a card is ever
-  added, set B2's daily caps and keep the lifecycle rules.
-- The Worker is public code in front of private data: kept small; tests cover path traversal, key
-  whitelists, expired commands, bad cookies, login lockout, and that no endpoint can return a B2 key.
-- Privacy defaults unchanged: local `PAUSE` file stops everything including talking to the Worker;
-  remote pause stops capture/upload but keeps polling so `resume` works.
-
-### Mac-side changes (what code moves)
-
-| Today | After |
-|---|---|
-| `upload.sh` lists Drive `control/` every minute | new `bin/listen.sh`, a **fifth LaunchAgent** with `KeepAlive`, polls the Worker (20 s / 2 s) and runs commands |
-| markers (`snap-now` folders etc.) | commands from `/mac/poll`; the old marker code is deleted |
-| `config.remote` file in Drive | `set` lines in the poll reply, same strict parser and ranges |
-| `status.json` copied to Drive | `POST /mac/status` |
-| `rclone move` to `gdrive:` | `rclone move` to a **b2** remote (native B2 backend), same batching, same `--min-age 15s` |
-| prune with `rclone delete` | B2 **lifecycle rule** (delete after 14 days, not for `keep/`); Worker cron trims the D1 index |
-| backoff for Drive rate limits | kept as a generic backoff; the rate-limit hint text is removed |
-| `setup-drive.sh`, `setup-oauth.sh` | `setup-remote.sh`: asks for the Worker URL, writes the Mac token, runs `rclone config create` for B2 (never prints keys, `chmod 600`) |
-| `archive-pull.sh` (Drive remote) | same script, B2 remote with a read-only key |
-
-`capture.sh`, `record.sh`, `trigger.sh`, `lib.sh` (gate, locks, debounce), Hammerspoon and the
-install/uninstall tooling are unchanged except for `install.sh` adding the fifth agent.
-
-### How it is tested without Cloudflare or Backblaze (this sandbox cannot reach either)
-
-- Worker logic is written as plain functions over a small storage interface (`worker/core.js`); `wrangler`
-  glue is a thin file. Node tests run the same code against an in-memory store.
-- A node HTTP server wraps `core.js` on localhost; the shell tests run the **real Mac scripts and real
-  curl** against it (poll, commands, expiry, fast mode, status, index, pause, settings, token rejection).
-- B2 side: rclone's `local` backend, as the Drive tests do now.
-- Not testable here: real Cloudflare, real Backblaze, the real login cookie in a real browser. Those need
-  a first-deploy check by the owner (a short checklist goes into `worker/README.md`).
-
-### Steps
-
-- **B0 (owner, ~15 min):** create a Cloudflare account and a Backblaze account **without adding a card**.
-  Confirm: Workers + D1 enable without a card; B2 bucket creation works without one. Tell me the result.
-  If either insists on a card, stop and use the **Tailscale** option in the table (or revisit).
-- **B1: Worker core + tests** (`worker/`): login, poll/ack/status/index, commands + expiry, settings
-  validation, image proxy, keep, watching/fast flag, cron cleanup. `wrangler.toml`, deploy README.
-- **B2: Mac side** (`listen.sh`, `api.sh`, `setup-remote.sh`, upload to B2, status/index calls, install.sh
-  fifth agent, `selftest.sh` checks for the new path) with the fake-Worker shell tests.
-- **B3: Website** rewrite (`web/api.js` replaces `web/drive.js`; `logic.js` keeps the settings table, health
-  and file-name parsing; the same wiring tests apply): status card, **Screenshot now**, **Live** view,
-  gallery, recordings, settings, Keep.
-- **B4: Cut over** (owner on the Mac): deploy Worker, run `setup-remote.sh`, `./bin/install.sh`, copy history
-  once with `rclone copy gdrive:mac-watch b2:<bucket>` if wanted, watch `./bin/status.sh` for a day.
-- **B5: Remove Drive:** revoke the rclone token in the Google account permissions page, delete the OAuth
-  clients, delete the Netlify site, delete `web/drive.js`, `setup-oauth.sh`, `setup-drive.sh`, the Drive
-  marker/prune code, update `README.md` and `CLAUDE.md`.
-
-### Risks and honest limits
-
-- **Most new code of any step so far**, all of it unverifiable against the real services from here. Expect a
-  first-deploy debugging round; budget for it.
-- **Cloudflare/Backblaze free terms can change**; sign-up behaviour (card or not) is the first thing to check.
-- A sleeping/offline Mac is a hole in any design: the page can only say "last seen 40 min ago".
-- Live view and polling use some battery on an unplugged Mac; both are throttled and live view is opt-in.
-- Single-owner design: no multi-user accounts, no password reset flow (reset = redeploy the Worker secret).
-
-## Part C: Backlog (not scheduled)
-
-- **"Mac went quiet" alert.** A Worker **cron trigger** (free plan allows a few) checks the status age and
-  sends a free push (for example ntfy.sh) when a Mac that reported "awake, lid open, not paused" goes silent
-  for 20 minutes. Falls out cheaply once Part B exists.
-- **True real-time view over Tailscale** as an optional add-on, for when you are watching live and the Mac is
-  awake (no cloud hop, no polling delay).
-- **`bin/update.sh`** on the Mac: `git pull`, re-run `install.sh`, restart agents.
-- **Frontmost app name** in the status line (via `osascript`); needs an extra macOS permission; opt-in.
-- **Daily timelapse / contact sheet** per day with `ffmpeg` (optional dependency).
-- **Idle-time trigger** (`HIDIdleTime`) if Hammerspoon proves flaky.
-- **Download a day as a zip** from the website.
-
----
-
-## Part D: Questions for the owner
-
-1. B0: do Cloudflare (Workers + D1) and Backblaze (B2 bucket) both sign up and work **without a card**?
-2. Website login: **passphrase first** (recommended) or Google sign-in from the start?
-3. OK that **live view** is opt-in (button) and costs some battery?
-4. `KEEP_AWAKE=1` + charger when you leave it at home? (Decided separately; matters for "reachable".)
-5. History: copy the existing Drive shots into B2, or start fresh?
-6. Name for the site: `butter-bot.<account>.workers.dev` is what you will get; a custom domain is optional.

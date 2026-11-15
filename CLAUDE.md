@@ -168,4 +168,7 @@ cleanly with SIGINT).
 
 ## Plans
 
-Open plans and a handoff note for another Claude (publishing the Google app; moving from Drive to Cloudflare R2) are in `PLAN.md`.
+**Google Drive is being replaced** by Backblaze B2 + a free Cloudflare Worker (owner's decision, no payment
+card anywhere). The full spec, the owner's setup steps and the work breakdown are in `PLAN.md`. Until that
+lands, everything above still describes the running system; whoever finishes `PLAN.md` step W6 must update
+this file to match.
