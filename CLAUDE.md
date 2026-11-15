@@ -165,3 +165,7 @@ cleanly with SIGINT).
   any optional delete).
 - Hammerspoon: fourth LaunchAgent opens it at login and the upload job restarts it if it dies
   (`state/hammerspoon-enabled`).
+
+## Plans
+
+Open plans and a handoff note for another Claude (publishing the Google app; moving from Drive to Cloudflare R2) are in `PLAN.md`.
