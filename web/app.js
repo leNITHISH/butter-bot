@@ -88,6 +88,7 @@
   function showSignIn() {
     stopTimers();
     $("nav").hidden = true;
+    $("tabbar").hidden = true;
     $("btn-signout").hidden = true;
     SCREENS.forEach(function (s) { $("screen-" + s).hidden = true; });
     $("screen-signin").hidden = false;
@@ -135,6 +136,12 @@
     api.status().then(function (st) {
       $("screen-signin").hidden = true;
       $("nav").hidden = false;
+      $("tabbar").hidden = false;
+      Array.prototype.forEach.call($("tabbar").querySelectorAll("a"), function (a) {
+        var on = a.getAttribute("data-screen") === name;
+        a.className = on ? "active" : "";
+        if (on) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+      });
       $("btn-signout").hidden = false;
       SCREENS.forEach(function (s) {
         $("screen-" + s).hidden = s !== name;

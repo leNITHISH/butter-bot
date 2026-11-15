@@ -29,7 +29,7 @@
         <span class="site-name">screens · recordings · storage</span>
       </div>
       <nav id="nav" class="nav-cells" hidden>
-        <div class="cell">
+        <div class="cell index-cell">
           <span class="caption">INDEX</span>
           <span class="nav-links">
             <a href="#home" id="nav-home">home</a>
@@ -175,6 +175,14 @@
       <p id="settings-msg" class="subtext"></p>
     </section>
   </main>
+
+  <!-- phones: the sections as a bottom bar, the heavy rule turning orange over the current one -->
+  <nav id="tabbar" class="tabbar" hidden aria-label="Sections">
+    <a href="#home" data-screen="home"><span class="caption">01</span>home</a>
+    <a href="#files" data-screen="files"><span class="caption">02</span>files</a>
+    <a href="#storage" data-screen="storage"><span class="caption">03</span>storage</a>
+    <a href="#settings" data-screen="settings"><span class="caption">04</span>settings</a>
+  </nav>
 
   <footer class="footer">
     <div class="footer-strip" aria-hidden="true">

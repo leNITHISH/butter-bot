@@ -68,9 +68,11 @@ h1 { margin: 0; }
 .nav-links a.active { text-decoration: underline; text-decoration-color: var(--orange); }
 @media (max-width: 600px) {
   .contents-cell { display: none; }
+  /* the bottom bar carries the sections on phones; sign out stays up here next to the name */
+  .index-cell { display: none; }
   .name-cell { border-right: 0; }
-  .nav-cells { flex-basis: 100%; border-top: var(--stroke-hairline) solid var(--ink); }
-  .nav-cells .cell:first-child { padding-left: 0; }
+  .nav-cells { flex: 1; justify-content: flex-end; }
+  .nav-cells .cell:last-child { border-left: var(--stroke-hairline) solid var(--ink); padding-right: 0; }
 }
 
 main { max-width: var(--wrap); margin: 0 auto; padding: 8px var(--gutter) 48px; }
@@ -293,3 +295,27 @@ dialog img, dialog video { max-width: 100%; max-height: 72vh; display: block; ma
          padding: 10px 16px; max-width: min(92vw, 560px); z-index: 30; font-weight: 540; border-left: 6px solid var(--orange); }
 #toast.error { border-left-color: var(--accent-paxcounter); }
 code { font-family: var(--mono); font-size: .86em; background: var(--code-bg); padding: 1px 4px; border-radius: 3px; }
+
+/* ------------------------------------------------------------ bottom bar (phones) --- */
+.tabbar { display: none; }
+@media (max-width: 600px) {
+  body { padding-bottom: calc(64px + env(safe-area-inset-bottom)); }
+  .tabbar:not([hidden]) {
+    display: grid; grid-template-columns: repeat(4, 1fr); position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+    background: var(--cream); border-top: var(--stroke-heavy) solid var(--ink); padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tabbar a {
+    position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+    min-height: 58px; color: var(--ink); text-decoration: none; font: 600 15px/1.2 var(--sans);
+  }
+  .tabbar a + a { border-left: var(--stroke-hairline) solid var(--ink); }
+  .tabbar a .caption { font-size: 10px; }
+  .tabbar a.active { font-weight: 680; }
+  .tabbar a.active .caption { color: var(--ink); }
+  /* the heavy rule turns orange over the current section, like it does over the mark */
+  .tabbar a.active::before { content: ""; position: absolute; left: 0; right: 0; top: calc(-1 * var(--stroke-heavy));
+                             height: var(--stroke-heavy); background: var(--orange); }
+  .tabbar a:active { background: var(--code-bg); }
+  #toast { bottom: calc(76px + env(safe-area-inset-bottom)); }
+  .sticky-actions { bottom: calc(62px + env(safe-area-inset-bottom)); }
+}
